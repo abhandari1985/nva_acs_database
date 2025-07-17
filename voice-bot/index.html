@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en-US">
+<head>
+    <title>Healthcare Voice Agent</title>
+    <script src="https://cdn.botframework.com/botframework-webchat/latest/webchat.js"></script>
+    <style>
+        html, body { height: 100%; margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        #webchat { height: 100%; width: 100%; }
+        #startContainer { 
+            display: flex; 
+            justify-content: center; 
+            align-items: center; 
+            height: 100vh; 
+            background-color: #f5f5f5; 
+            flex-direction: column;
+        }
+        #startButton { 
+            padding: 15px 30px; 
+            font-size: 18px; 
+            background-color: #0078d4; 
+            color: white; 
+            border: none; 
+            border-radius: 8px; 
+            cursor: pointer; 
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+            transition: background-color 0.3s;
+        }
+        #startButton:hover { 
+            background-color: #106ebe; 
+        }
+        #startButton:active { 
+            background-color: #005a9e; 
+        }
+        .info-text {
+            margin-bottom: 20px;
+            text-align: center;
+            color: #323130;
+            font-size: 16px;
+        }
+        .hidden { display: none; }
+    </style>
+</head>
+<body>
+    <div id="startContainer">
+        <div class="info-text">
+            <h2>Healthcare Voice Agent</h2>
+            <p>Click the button below to start your voice conversation with Jenny</p>
+        </div>
+        <button id="startButton">🎤 Start Voice Conversation</button>
+    </div>
+    <div id="webchat" role="main" class="hidden"></div>
+    <script>
+      // Azure Speech Service configuration
+      const speechKey = 'YOUR_AZURE_SPEECH_KEY_HERE';
+      const speechRegion = 'eastus2';
+      
+      // Bot endpoint for direct connection
+      const botEndpoint = 'http://localhost:3978/api/messages';
+
+      document.getElementById('startButton').addEventListener('click', async () => {
+        try {
+          console.log('Starting voice conversation...');
+          
+          // Hide start container and show webchat
+          document.getElementById('startContainer').classList.add('hidden');
+          document.getElementById('webchat').classList.remove('hidden');
+          
+          // Create speech services factory
+          const webSpeechPonyfillFactory = await window.WebChat.createCognitiveServicesSpeechServicesPonyfillFactory({
+            credentials: {
+              region: speechRegion,
+              subscriptionKey: speechKey,
+            },
+            speechSynthesisOutputFormat: 'Audio16Khz32KBitRateMonoMp3'
+          });
+          
+          console.log('Speech factory created successfully');
+
+          // Render WebChat with voice capabilities
+          window.WebChat.renderWebChat(
+            {
+              // Create DirectLine connection for local development
+              directLine: window.WebChat.createDirectLine({
+                domain: 'http://localhost:3978/api/messages',
+                webSocket: false
+              }),
+              webSpeechPonyfillFactory,
+              userID: 'patient_01',
+              username: 'Patient',
+              locale: 'en-US',
+              styleOptions: {
+                botAvatarInitials: 'JY',
+                userAvatarInitials: 'P',
+                backgroundColor: '#F8F8F8'
+              },
+              // Speech synthesis with Azure Neural voices
+              speechOptions: {
+                speechSynthesis: {
+                  autoplay: true,
+                  speechSynthesisVoiceName: 'en-US-AriaNeural',
+                  // Healthcare-optimized voice selection
+                  selectVoice: (voices, activity) => {
+                    console.log('Available voices:', voices.map(v => `${v.name} (${v.lang})`));
+                    
+                    // Professional healthcare voice preferences
+                    const preferredVoices = [
+                      'en-US-AriaNeural',         // Primary healthcare voice
+                      'en-US-SaraNeural',         // Warm and clear
+                      'en-US-NancyNeural',        // Professional and reassuring
+                      'en-US-DavisNeural',        // Male alternative
+                      
+                      'Microsoft Aria Online (Natural) - English (United States)',
+                      'Microsoft Sara Online (Natural) - English (United States)',
+                      
+                      'Microsoft Zira - English (United States)',
+                      'Microsoft Hazel - English (United States)',
+                      'Microsoft David - English (United States)',
+                      
+                      'Google US English Female',
+                      'Google US English',
+                      'Samantha',                   // macOS
+                      'Alex',                       // macOS male
+                      'Ava'                         // iOS
+                    ];
+                    
+                    // Primary voice selection
+                    for (const preferredVoice of preferredVoices) {
+                      const voice = voices.find(v => v.name === preferredVoice);
+                      if (voice) {
+                        console.log('Selected preferred voice:', voice.name);
+                        return voice;
+                      }
+                    }
+                    
+                    // Fallback to Neural voices
+                    const neuralVoice = voices.find(v => 
+                      v.name.includes('Neural') && 
+                      v.lang.startsWith('en-US') &&
+                      (v.name.includes('Aria') || v.name.includes('Sara') || v.name.includes('Nancy'))
+                    );
+                    if (neuralVoice) {
+                      console.log('Selected Neural fallback voice:', neuralVoice.name);
+                      return neuralVoice;
+                    }
+                    
+                    // Fallback to quality voices
+                    const qualityVoice = voices.find(v => 
+                      v.lang.startsWith('en') && 
+                      (v.name.includes('Zira') || v.name.includes('Hazel') || 
+                       v.name.includes('Samantha') || v.name.includes('Google') ||
+                       v.name.includes('Natural') || v.name.includes('Online'))
+                    );
+                    if (qualityVoice) {
+                      console.log('Selected quality fallback voice:', qualityVoice.name);
+                      return qualityVoice;
+                    }
+                    
+                    // Final fallback to any English voice
+                    const englishVoice = voices.find(v => v.lang.startsWith('en'));
+                    if (englishVoice) {
+                      console.log('Selected English fallback voice:', englishVoice.name);
+                      return englishVoice;
+                    }
+                    
+                    console.log('Using system default voice');
+                    return voices[0];
+                  },
+                  // SSML wrapper for professional healthcare voice
+                  transformText: (text, activity) => {
+                    // Wrap text in SSML for consistent voice delivery
+                    return `<speak version="1.0" xmlns="https://www.w3.org/2001/10/synthesis" xml:lang="en-US">
+                      <voice name="en-US-AriaNeural">
+                        <prosody rate="0.85" pitch="-1%">
+                          ${text.replace(/[<>&"']/g, (match) => {
+                            const escapeMap = { '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' };
+                            return escapeMap[match];
+                          })}
+                        </prosody>
+                      </voice>
+                    </speak>`;
+                  }
+                }
+              }
+            },
+            document.getElementById('webchat')
+          );
+        } catch (error) {
+          console.error("Web Chat setup failed:", error);
+          alert("Failed to initialize voice chat. Please check your configuration and try again.");
+        }
+      });
+    </script>
+</body>
+</html>

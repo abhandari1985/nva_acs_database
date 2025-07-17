@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="en-US">
+<head>
+    <title>Healthcare Voice Agent - Local</title>
+    <script src="https://cdn.botframework.com/botframework-webchat/latest/webchat.js"></script>
+    <style>
+        html, body { height: 100%; margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        #webchat { height: 100%; width: 100%; }
+        #startContainer { 
+            display: flex; 
+            justify-content: center; 
+            align-items: center; 
+            height: 100vh; 
+            background-color: #f5f5f5; 
+            flex-direction: column;
+        }
+        #startButton { 
+            padding: 15px 30px; 
+            font-size: 18px; 
+            background-color: #0078d4; 
+            color: white; 
+            border: none; 
+            border-radius: 8px; 
+            cursor: pointer; 
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+            transition: background-color 0.3s;
+        }
+        #startButton:hover { 
+            background-color: #106ebe; 
+        }
+        #startButton:active { 
+            background-color: #005a9e; 
+        }
+        .info-text {
+            margin-bottom: 20px;
+            text-align: center;
+            color: #323130;
+            font-size: 16px;
+        }
+        .hidden { display: none; }
+        .error-message {
+            color: #d13438;
+            background-color: #fde7e9;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 10px 0;
+            border-left: 4px solid #d13438;
+        }
+        .chat-container {
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+        .chat-header {
+            background-color: #0078d4;
+            color: white;
+            padding: 15px;
+            text-align: center;
+            font-weight: bold;
+        }
+        .chat-area {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            padding: 20px;
+            overflow-y: auto;
+            background-color: #f8f9fa;
+        }
+        .message {
+            margin: 10px 0;
+            padding: 12px 16px;
+            border-radius: 18px;
+            max-width: 80%;
+            word-wrap: break-word;
+        }
+        .user-message {
+            background-color: #0078d4;
+            color: white;
+            align-self: flex-end;
+            margin-left: auto;
+        }
+        .bot-message {
+            background-color: white;
+            color: #323130;
+            align-self: flex-start;
+            border: 1px solid #e1e1e1;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+        }
+        .input-area {
+            display: flex;
+            padding: 15px;
+            background-color: white;
+            border-top: 1px solid #e1e1e1;
+        }
+        .input-area input {
+            flex: 1;
+            padding: 12px;
+            border: 1px solid #e1e1e1;
+            border-radius: 20px;
+            outline: none;
+            font-size: 14px;
+        }
+        .input-area button {
+            margin-left: 10px;
+            padding: 12px 20px;
+            background-color: #0078d4;
+            color: white;
+            border: none;
+            border-radius: 20px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .mic-button {
+            background-color: #d13438 !important;
+            margin-left: 5px !important;
+            width: 45px !important;
+            padding: 12px !important;
+        }
+        .mic-button.listening {
+            background-color: #107c10 !important;
+            animation: pulse 1s infinite;
+        }
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.1); }
+            100% { transform: scale(1); }
+        }
+    </style>
+</head>
+<body>
+    <div id="startContainer">
+        <div class="info-text">
+            <h2>Healthcare Voice Agent</h2>
+            <p>Click the button below to start your voice conversation with Jenny</p>
+        </div>
+        <button id="startButton">🎤 Start Voice Conversation</button>
+    </div>
+    
+    <div id="chatContainer" class="hidden">
+        <div class="chat-container">
+            <div class="chat-header">
+                🎤 Voice Conversation with Jenny - Healthcare Assistant
+            </div>
+            <div id="chatArea" class="chat-area">
+                <!-- Messages appear here -->
+            </div>
+            <div class="input-area">
+                <input type="text" id="messageInput" placeholder="Type your message or use the microphone..." />
+                <button id="sendButton">Send</button>
+                <button id="micButton" class="mic-button">🎤</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Configuration
+        const speechKey = 'YOUR_AZURE_SPEECH_KEY_HERE';
+        const speechRegion = 'eastus2';
+        const botEndpoint = 'http://localhost:3978/api/messages';
+        
+        // Chat state
+        let chatArea, messageInput, sendButton, micButton;
+        let isListening = false;
+        let recognition;
+        let synthesis = window.speechSynthesis;
+        let conversationStarted = false;
+
+        // Initialize voice for healthcare communication
+        function initializeVoice() {
+            const voices = synthesis.getVoices();
+            console.log('Available voices for healthcare bot:', voices.map(v => `${v.name} (${v.lang})`));
+            
+            // Healthcare-optimized voice selection
+            const preferredVoices = [
+                'en-US-AriaNeural',           // Primary healthcare voice
+                'en-US-SaraNeural',           // Warm, excellent for seniors
+                'en-US-NancyNeural',          // Clear and professional
+                'en-US-DavisNeural',          // Male alternative
+                
+                'Microsoft Aria Online (Natural) - English (United States)',
+                'Microsoft Sara Online (Natural) - English (United States)',
+                
+                'Microsoft Zira - English (United States)',
+                'Microsoft Hazel - English (United States)',
+                'Microsoft David - English (United States)',
+                
+                'Google US English Female',
+                'Google US English',
+                'Samantha',                   // macOS
+                'Alex',                       // macOS male
+                'Ava'                         // iOS
+            ];
+            
+            // Primary selection
+            for (const preferredVoice of preferredVoices) {
+                const voice = voices.find(v => v.name === preferredVoice);
+                if (voice) {
+                    console.log('Selected healthcare voice:', voice.name);
+                    return voice;
+                }
+            }
+            
+            // Fallback to Neural voices
+            const neuralVoice = voices.find(v => 
+                v.name.includes('Neural') && 
+                v.lang.startsWith('en-US')
+            );
+            if (neuralVoice) {
+                console.log('Selected Neural fallback:', neuralVoice.name);
+                return neuralVoice;
+            }
+            
+            // Fallback to quality voices
+            const qualityVoice = voices.find(v => 
+                v.lang.startsWith('en') && 
+                (v.name.includes('Zira') || v.name.includes('Hazel') || 
+                 v.name.includes('Samantha') || v.name.includes('Google') ||
+                 v.name.includes('Natural'))
+            );
+            if (qualityVoice) {
+                console.log('Selected quality fallback:', qualityVoice.name);
+                return qualityVoice;
+            }
+            
+            // Final fallback
+            const englishVoice = voices.find(v => v.lang.startsWith('en'));
+            console.log('Using fallback voice:', englishVoice?.name || voices[0]?.name || 'system default');
+            return englishVoice || voices[0];
+        }
+
+        // Speak text with Jenny's voice
+        function speakText(text) {
+            if (synthesis.speaking) {
+                synthesis.cancel();
+            }
+            
+            const utterance = new SpeechSynthesisUtterance(text);
+            const voice = initializeVoice();
+            
+            if (voice) {
+                utterance.voice = voice;
+                utterance.rate = 0.85;  // Slightly slower for healthcare clarity
+                utterance.pitch = 0.95; // Slightly lower pitch for professionalism
+            }
+            
+            utterance.onend = () => {
+                console.log('Finished speaking');
+            };
+            
+            utterance.onerror = (event) => {
+                console.error('Speech synthesis error:', event.error);
+            };
+            
+            synthesis.speak(utterance);
+        }
+
+        // Initialize speech recognition
+        function initializeSpeechRecognition() {
+            if ('webkitSpeechRecognition' in window) {
+                recognition = new webkitSpeechRecognition();
+            } else if ('SpeechRecognition' in window) {
+                recognition = new SpeechRecognition();
+            } else {
+                console.error('Speech recognition not supported');
+                return false;
+            }
+            
+            // Enhanced settings for healthcare vocabulary recognition
+            recognition.continuous = false;        // Single utterance mode for better accuracy
+            recognition.interimResults = true;     // Show interim results for feedback
+            recognition.lang = 'en-US';           // US English for healthcare terminology
+            recognition.maxAlternatives = 5;      // More alternatives for better accuracy
+            recognition.serviceURI = '';          // Use default high-quality service
+            
+            // Additional properties for better recognition
+            if ('grammars' in recognition) {
+                // Add healthcare-specific grammar hints if supported
+                const grammar = '#JSGF V1.0; grammar healthcare; public <healthcare> = appointment | schedule | reschedule | cancel | doctor | nurse | medication | prescription | symptoms | blood pressure | diabetes | insurance | copay | deductible;';
+                recognition.grammars.addFromString(grammar, 1);
+            }
+            
+            recognition.onstart = () => {
+                isListening = true;
+                micButton.classList.add('listening');
+                micButton.textContent = '🔴';
+                console.log('Started listening - speak clearly about your healthcare needs');
+            };
+            
+            recognition.onresult = (event) => {
+                let finalTranscript = '';
+                let interimTranscript = '';
+                let confidence = 0;
+                
+                for (let i = event.resultIndex; i < event.results.length; i++) {
+                    const result = event.results[i];
+                    const transcript = result[0].transcript;
+                    confidence = result[0].confidence || 0;
+                    
+                    if (result.isFinal) {
+                        finalTranscript += transcript;
+                        
+                        // Log alternative interpretations for debugging
+                        if (result.length > 1) {
+                            console.log('Speech alternatives:');
+                            for (let j = 0; j < Math.min(result.length, 3); j++) {
+                                console.log(`  ${j + 1}: "${result[j].transcript}" (confidence: ${result[j].confidence || 'unknown'})`);
+                            }
+                        }
+                    } else {
+                        interimTranscript += transcript;
+                    }
+                }
+                
+                // Enhanced user feedback during recognition
+                if (interimTranscript) {
+                    messageInput.placeholder = `Listening: "${interimTranscript.trim()}"...`;
+                    messageInput.style.backgroundColor = '#f0f8ff'; // Light blue to show active listening
+                }
+                
+                if (finalTranscript) {
+                    const cleanTranscript = finalTranscript.trim();
+                    console.log(`Speech recognized: "${cleanTranscript}" (confidence: ${confidence})`);
+                    
+                    // Apply basic healthcare vocabulary corrections
+                    const correctedTranscript = applyHealthcareCorrections(cleanTranscript);
+                    
+                    messageInput.value = correctedTranscript;
+                    messageInput.placeholder = 'Type your message or use the microphone...';
+                    messageInput.style.backgroundColor = ''; // Reset background
+                    
+                    // Auto-send if confidence is high enough
+                    if (confidence > 0.7 || confidence === 0) { // Some browsers don't provide confidence
+                        sendMessage();
+                    } else {
+                        // Low confidence - let user review/edit
+                        messageInput.focus();
+                        console.log('Low confidence recognition, allowing user to review');
+                    }
+                }
+            };
+            
+            // Apply healthcare-specific vocabulary corrections
+            function applyHealthcareCorrections(text) {
+                const corrections = {
+                    // Common misrecognitions in healthcare context
+                    'appointment': ['appointement', 'apointment', 'appointment'],
+                    'schedule': ['shedule', 'scedule'],
+                    'reschedule': ['reshcedule', 'reschedul'],
+                    'cancel': ['cancle', 'canel'],
+                    'doctor': ['docter', 'docktor'],
+                    'prescription': ['perscription', 'precription'],
+                    'medication': ['mediation', 'medicaton'],
+                    'symptoms': ['simptoms', 'symtoms'],
+                    'insurance': ['insurence', 'insuranse'],
+                    'tomorrow': ['tomorow', 'tommorow'],
+                    'today': ['to day'],
+                    'next week': ['next weak'],
+                    'blood pressure': ['blod pressure', 'blood presure'],
+                    'diabetes': ['diabeetes', 'diabetis']
+                };
+                
+                let correctedText = text.toLowerCase();
+                
+                for (const [correct, variations] of Object.entries(corrections)) {
+                    variations.forEach(variation => {
+                        const regex = new RegExp(variation, 'gi');
+                        correctedText = correctedText.replace(regex, correct);
+                    });
+                }
+                
+                return correctedText;
+            }
+            
+            recognition.onend = () => {
+                isListening = false;
+                micButton.classList.remove('listening');
+                micButton.textContent = '🎤';
+                messageInput.placeholder = 'Type your message or use the microphone...';
+                console.log('Stopped listening');
+            };
+            
+            recognition.onerror = (event) => {
+                console.error('Speech recognition error:', event.error);
+                if (event.error === 'no-speech') {
+                    addMessage('I didn\'t hear anything. Please try speaking again.', false);
+                } else if (event.error === 'audio-capture') {
+                    addMessage('Microphone not available. Please check your microphone settings.', false);
+                } else if (event.error === 'not-allowed') {
+                    addMessage('Microphone access denied. Please allow microphone access to use voice input.', false);
+                }
+                isListening = false;
+                micButton.classList.remove('listening');
+                micButton.textContent = '🎤';
+                messageInput.placeholder = 'Type your message or use the microphone...';
+            };
+            
+            return true;
+        }
+
+        // Add message to chat
+        function addMessage(text, isUser = false) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${isUser ? 'user-message' : 'bot-message'}`;
+            messageDiv.textContent = text;
+            chatArea.appendChild(messageDiv);
+            chatArea.scrollTop = chatArea.scrollHeight;
+        }
+
+        // Send message to bot
+        async function sendMessage() {
+            const text = messageInput.value.trim();
+            if (!text) return;
+            
+            addMessage(text, true);
+            messageInput.value = '';
+            
+            try {
+                console.log('Sending message to bot:', text);
+                
+                const response = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        message: text
+                    })
+                });
+                
+                console.log('Response status:', response.status);
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    console.log('Bot response data:', data);
+                    
+                    if (data && data.response) {
+                        addMessage(data.response, false);
+                        speakText(data.response);
+                    } else {
+                        addMessage('I received your message but had trouble responding.', false);
+                    }
+                } else {
+                    const errorData = await response.text();
+                    console.error('Server error:', response.status, errorData);
+                    throw new Error(`HTTP ${response.status}: ${errorData}`);
+                }
+            } catch (error) {
+                console.error('Error sending message:', error);
+                addMessage('Sorry, I encountered a connection error. Please try again.', false);
+            }
+        }
+
+        // Start the conversation
+        function startConversation() {
+            console.log('Starting conversation...');
+            
+            try {
+                document.getElementById('startContainer').classList.add('hidden');
+                document.getElementById('chatContainer').classList.remove('hidden');
+                
+                chatArea = document.getElementById('chatArea');
+                messageInput = document.getElementById('messageInput');
+                sendButton = document.getElementById('sendButton');
+                micButton = document.getElementById('micButton');
+                
+                console.log('UI elements initialized');
+                
+                // Initialize speech recognition
+                const speechSupported = initializeSpeechRecognition();
+                if (!speechSupported) {
+                    console.log('Speech recognition not supported, hiding mic button');
+                    micButton.style.display = 'none';
+                }
+                
+                // Event listeners
+                sendButton.addEventListener('click', sendMessage);
+                messageInput.addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') {
+                        sendMessage();
+                    }
+                });
+                
+                micButton.addEventListener('click', () => {
+                    if (isListening) {
+                        recognition.stop();
+                    } else {
+                        recognition.start();
+                    }
+                });
+                
+                console.log('Event listeners added');
+                
+                // Send welcome message
+                if (!conversationStarted) {
+                    conversationStarted = true;
+                    console.log('Sending welcome message...');
+                    
+                    setTimeout(() => {
+                        const welcomeMessage = "Hello! This is Jenny from the post-discharge care team. I'm here to help with your medication follow-up or schedule appointments. How can I assist you today?";
+                        addMessage(welcomeMessage, false);
+                        speakText(welcomeMessage);
+                        console.log('Welcome message sent and spoken');
+                    }, 500);
+                }
+            } catch (error) {
+                console.error('Error starting conversation:', error);
+                alert('Error starting conversation: ' + error.message);
+            }
+        }
+
+        // Initialize when page loads
+        document.addEventListener('DOMContentLoaded', () => {
+            // Load voices
+            if (synthesis.onvoiceschanged !== undefined) {
+                synthesis.onvoiceschanged = initializeVoice;
+            }
+            
+            // Start button event
+            document.getElementById('startButton').addEventListener('click', startConversation);
+        });
+    </script>
+</body>
+</html>
