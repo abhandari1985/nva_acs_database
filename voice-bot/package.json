@@ -16,7 +16,7 @@
     },
     "repository": {
         "type": "git",
-        "url": "https://github.com"
+        "url": "https://github.com/abhandari1985/nva_acs_database.git"
     },
     "dependencies": {
         "@azure/identity": "^4.10.2",

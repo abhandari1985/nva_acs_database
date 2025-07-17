@@ -46,8 +46,8 @@ npm --version
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/your-org/nursing-voice-agent.git
-cd nursing-voice-agent/voice-bot
+git clone https://github.com/abhandari1985/nva_acs_database.git
+cd nva_acs_database/voice-bot
 ```
 
 ### 2. Install Dependencies
