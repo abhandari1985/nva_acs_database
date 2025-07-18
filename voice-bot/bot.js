@@ -32,7 +32,7 @@ const AZURE_OPENAI_CONFIG = {
 // =========================================================================================
 // IMPROVEMENT 1: The emergency response is now a concluding instruction, not a handoff offer.
 // =========================================================================================
-const EMERGENCY_SAFETY_RESPONSE = "If you're experiencing severe symptoms like dizziness, trouble breathing, or intense pain, please hang up and call 911 or your local emergency services. I’ll flag this conversation as a high-priority alert for the nursing team.";
+const EMERGENCY_SAFETY_RESPONSE = "Thanks for letting me know. That could be important. If you're experiencing anything like chest pain, trouble breathing, or feeling very unwell, please call your doctor or 911 right away.";
 
 const SHARED_INSTRUCTIONS = `
 ### SHARED BEHAVIOR AND RULES ###
@@ -41,7 +41,7 @@ const SHARED_INSTRUCTIONS = `
 - Your role is to handle medication adherence checks and schedule follow-up appointments. You cannot connect to a live doctor or nurse.
 - You are speaking with {Patient_Name}, who was recently discharged and prescribed {treatment_name}.
 - Maintain a warm, respectful, and calming tone as you would in a professional healthcare call.
-- CRITICAL SAFETY PROTOCOL: If the user mentions severe side effects (e.g., "dizzy," "chest pain," "can't breathe"), you must immediately stop your current task and provide the exact scripted safety response: "${EMERGENCY_SAFETY_RESPONSE}" Then continue to ask about scheduling their follow-up appointment.
+- CRITICAL SAFETY PROTOCOL: If the user mentions severe side effects (e.g., "dizzy," "chest pain," "can't breathe"), you must immediately stop your current task and provide the exact scripted safety response: "${EMERGENCY_SAFETY_RESPONSE}" continue the conversation without sounding dismissive. "I'm really glad you’ve been taking your medication as prescribed. Let’s also make sure you're scheduled for your follow-up appointment."
 - CRITICAL HANDOFF PROTOCOL: If the conversation history shows a switch from another specialist, you MUST briefly acknowledge the previous topic before proceeding.
 - CRITICAL CONFIRMATION RULE: Always confirm critical information like medication names and appointment times by reading them back to the user.
 - Remember: You initiated this call to check on the patient's well-being and medication compliance.
@@ -111,7 +111,7 @@ You help ${patientRecord.patientName} book, reschedule, or cancel follow-up appo
 - Patient was discharged recently and needs a follow-up appointment
 
 **Business Hours (Clinic Time Zone):**
-- Available slots: 9:00 AM, 10:00 AM, 10:30 AM, 11:00 AM, 2:00 PM, 3:00 PM, 4:00 PM, 5:00 PM
+- Available slots: 9:00 AM, 11:00 AM, 2:00 PM
 
 **Your Tool-Use Protocol:**
 Use the scheduling tools to help ${patientRecord.patientName} book their follow-up appointment with Dr. ${patientRecord.doctorName}.
@@ -223,7 +223,7 @@ class EchoBot extends ActivityHandler {
     async processMessage(userText) {
         // Handle special start call trigger
         if (userText === '__START_CALL__') {
-            const welcomeMessage = `Hello ${this.patientRecord.patientName}! Hi ${this.patientRecord.patientName}, this is Jenny calling for Dr. ${this.patientRecord.doctorName} with your follow-up. Hope you're well! Have you picked up your medication yet for ${this.patientRecord.prescriptions[0].medicationName}?`;
+            const welcomeMessage = `Hello ${this.patientRecord.patientName}! this is Jenny calling for Dr. ${this.patientRecord.doctorName} with your follow-up. Hope you're well! Have you picked up your medication yet for ${this.patientRecord.prescriptions[0].medicationName}?`;
             this.conversationHistory.push({ role: 'assistant', content: welcomeMessage });
             return welcomeMessage; // Return clean text instead of SSML
         }
