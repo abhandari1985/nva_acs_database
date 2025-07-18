@@ -1,0 +1,8 @@
+name: healthcare-voice-agent
+metadata:
+  template: healthcare-voice-agent@0.0.1-beta
+services:
+  voice-bot-backend:
+    project: ./voice-bot
+    language: js
+    host: appservice

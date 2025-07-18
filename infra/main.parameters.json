@@ -1,0 +1,48 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "environmentName": {
+      "value": "${AZURE_ENV_NAME}"
+    },
+    "location": {
+      "value": "${AZURE_LOCATION}"
+    },
+    "microsoftAppId": {
+      "value": "${MICROSOFT_APP_ID}"
+    },
+    "microsoftAppPassword": {
+      "value": "${MICROSOFT_APP_PASSWORD}"
+    },
+    "azureOpenAiEndpoint": {
+      "value": "${AZURE_OPENAI_ENDPOINT}"
+    },
+    "azureOpenAiKey": {
+      "value": "${AZURE_OPENAI_KEY}"
+    },
+    "azureOpenAiDeploymentName": {
+      "value": "${AZURE_OPENAI_DEPLOYMENT_NAME}"
+    },
+    "azureSpeechKey": {
+      "value": "${AZURE_SPEECH_KEY}"
+    },
+    "azureSpeechRegion": {
+      "value": "${AZURE_SPEECH_REGION}"
+    },
+    "graphClientId": {
+      "value": "${GRAPH_CLIENT_ID}"
+    },
+    "graphTenantId": {
+      "value": "${GRAPH_TENANT_ID}"
+    },
+    "graphClientSecret": {
+      "value": "${GRAPH_CLIENT_SECRET}"
+    },
+    "graphUserId": {
+      "value": "${GRAPH_USER_ID}"
+    },
+    "schedulerAgentEmail": {
+      "value": "${SCHEDULER_AGENT_EMAIL}"
+    }
+  }
+}
