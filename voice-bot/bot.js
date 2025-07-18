@@ -1,16 +1,19 @@
-// Healthcare Voice Agent with Triage Routing
-// Azure OpenAI integration with error handling and security
-
+    // Healthcare Voice Agent with Triage Routing
+// At the top of your bot.js file, with other requires
+const fs = require('fs');
+const path = require('path');
 const { ActivityHandler, MessageFactory } = require('botbuilder');
 const axios = require('axios');
 const { SchedulingPlugin } = require('./schedulingPlugin');
 require('dotenv').config();
 
+// --- Configuration and Initialization (No Changes) ---
 const requiredEnvVars = ['AZURE_OPENAI_ENDPOINT', 'AZURE_OPENAI_KEY', 'AZURE_OPENAI_DEPLOYMENT_NAME'];
 const missingEnvVars = requiredEnvVars.filter(varName => !process.env[varName]);
 if (missingEnvVars.length > 0) {
-    console.error(`[Bot] Missing required environment variables: ${missingEnvVars.join(', ')}`);
-    throw new Error('Required environment variables are missing');
+    const errorMsg = `[Bot] Missing required environment variables: ${missingEnvVars.join(', ')}`;
+    console.error(errorMsg);
+    throw new Error(errorMsg);
 }
 
 const AZURE_OPENAI_CONFIG = {
@@ -23,331 +26,319 @@ const AZURE_OPENAI_CONFIG = {
     timeoutMs: 30000
 };
 
-// Shared instructions for all healthcare agent specialists
+
+// --- Core Prompts and Shared Instructions ---
+
+// =========================================================================================
+// IMPROVEMENT 1: The emergency response is now a concluding instruction, not a handoff offer.
+// =========================================================================================
+const EMERGENCY_SAFETY_RESPONSE = "If you are experiencing severe symptoms like dizziness, difficulty breathing, or significant pain, please hang up and dial 911 or contact your local emergency services immediately. I am logging this conversation as a high-priority alert for the nursing care team to review.";
+
 const SHARED_INSTRUCTIONS = `
 ### SHARED BEHAVIOR AND RULES ###
-- Your name is "Jenny." You must act as a single, unified AI assistant, regardless of the task.
-- Your tone is always friendly, professional, and reassuring.
-- Your primary goal is to help the patient with their specific request.
-- CRITICAL: If the conversation history shows you were just handed off from another specialist, you MUST briefly acknowledge the previous topic before proceeding. Example: "I understand you were just discussing your medication. I can now help you schedule an appointment."
-- CRITICAL: The safety rails for medical advice and emergency escalation are always active. If the user mentions severe side effects or asks for medical advice, you must stop your current task and provide the scripted safety response.
-- Protect patient privacy and confidentiality in all interactions.
-- Keep your responses clear and as concise as possible.
-
-### SPEECH RECOGNITION AWARENESS ###
-- Be patient and understanding if the patient's speech seems unclear or has minor errors - they may be using voice input.
-- If you receive text that seems like it might have speech recognition errors (missing letters, similar-sounding words), try to understand the intent.
-- Common speech recognition issues to be aware of:
-  * "appointment" might come through as "appointement" or "apointment"
-  * "schedule" might be "shedule" or "scedule"  
-  * "reschedule" might be "reshcedule"
-  * "doctor" might be "docter"
-  * "prescription" might be "perscription"
-  * Time expressions like "tomorrow" might be "tomorow"
-- Always confirm important details like dates and times to ensure accuracy.
-- If you're unsure about what the patient said, politely ask for clarification: "I want to make sure I understand correctly..."
+- You are Jenny, an AI assistant calling on behalf of Dr. {Doctor_Name}. You initiated this post-discharge follow-up call.
+- This is an OUTBOUND CALL - you called the patient {Patient_Name} to check on their recovery and medication adherence.
+- Your role is to handle medication adherence checks and schedule follow-up appointments. You cannot connect to a live doctor or nurse.
+- You are speaking with {Patient_Name}, who was recently discharged and prescribed {treatment_name}.
+- Maintain a warm, respectful, and calming tone as you would in a professional healthcare call.
+- CRITICAL SAFETY PROTOCOL: If the user mentions severe side effects (e.g., "dizzy," "chest pain," "can't breathe"), you must immediately stop your current task and provide the exact scripted safety response: "${EMERGENCY_SAFETY_RESPONSE}" Then continue to ask about scheduling their follow-up appointment.
+- CRITICAL HANDOFF PROTOCOL: If the conversation history shows a switch from another specialist, you MUST briefly acknowledge the previous topic before proceeding.
+- CRITICAL CONFIRMATION RULE: Always confirm critical information like medication names and appointment times by reading them back to the user.
+- Remember: You initiated this call to check on the patient's well-being and medication compliance.
 `;
 
-// Medication adherence agent prompt
 const ADHERENCE_AGENT_PROMPT = `${SHARED_INSTRUCTIONS}
 
 ### YOUR CURRENT SPECIALTY: MEDICATION ADHERENCE ###
-You are checking in with a patient about their new medication protocol.
+Your goal is to be supportive and identify any issues for the nursing team to review later.
 
-**Your Conversational Protocol for this task:**
-1.  **Introduction:** If starting the conversation, introduce yourself and the reason for your call.
-2.  **Medication Check:** Ask if they have started taking their new medication.
-3.  **Protocol Adherence Check:** Verify they are following the correct dosage and frequency.
-4.  **Protocol Reinforcement:** Gently remind them of the importance of the protocol.
-5.  **Question Triage:** Ask if they have any non-urgent questions for the nursing team.
+**Patient Context:**
+- Patient Name: {Patient_Name}
+- Doctor: Dr. {Doctor_Name}
+- Medication: {treatment_name}
+- Prescription Details: {medication_details}
+
+**Conversation Awareness:**
+- Read the conversation history. If the patient has already confirmed they have their medication, DO NOT ask if they have picked it up. Skip directly to the dosage check.
+
+**COMPLETION DETECTION:**
+- If the patient indicates they have NO PROBLEMS, NO ISSUES, NO SIDE EFFECTS, or that everything is FINE/GOOD/WELL with their medication, immediately transition to scheduling
+- Look for phrases like: "no problems", "no issues", "fine", "good", "well", "no side effects", "everything is good"
+- When transitioning, say: "Perfect! It sounds like you're managing your medication well. The last thing is to schedule your follow-up appointment with Dr. {Doctor_Name}. Are you available to do that now?"
+
+**Conversation Structure (Only if issues need to be explored):**
+1.  **Initial Check:** If not already discussed, ask: "Have you had a chance to pick up your {treatment_name} prescription yet?"
+2.  **Dosage/Timing Check:** Verify how they are taking the medication. Be specific about the prescribed dosage.
+    - Example: "I'm glad to hear you have it. The instructions are for {medication_details}. How have you been managing with that schedule?"
+3.  **Quick Issue Check:** Ask directly: "Are you experiencing any side effects or problems with your {treatment_name}?"
+4.  **If NO ISSUES:** Immediately transition to scheduling using the completion phrase above
+5.  **If ISSUES MENTIONED:** 
+    - **Severe Side Effects:** Use the EMERGENCY_SAFETY_RESPONSE, then immediately ask: "Now, would you like me to help you schedule your follow-up appointment with Dr. {Doctor_Name}?"
+    - **Non-Urgent Issues:** Acknowledge and inform the patient you will document the issue for Dr. {Doctor_Name}'s team.
+6.  **End of Adherence Flow:** Once any issues are addressed, transition to scheduling: "The last thing is to schedule your follow-up appointment with Dr. {Doctor_Name}. Are you available to do that now?"
+
+**PRIORITY:** Always look for completion signals first. Don't unnecessarily prolong the adherence conversation if the patient indicates no problems.
 `;
 
-// Cached scheduling prompt to avoid regeneration
 let CACHED_SCHEDULING_AGENT_PROMPT = null;
 let PROMPT_CACHE_DATE = null;
 
-// Dynamic scheduling agent prompt with current date context
-function getSchedulingAgentPrompt() {
+function getSchedulingAgentPrompt(patientRecord) {
     const today = new Date();
     const currentDateString = today.toDateString();
-    
+
     if (!CACHED_SCHEDULING_AGENT_PROMPT || PROMPT_CACHE_DATE !== currentDateString) {
         const tomorrow = new Date(today);
         tomorrow.setDate(tomorrow.getDate() + 1);
-        
-        const todayISO = today.getFullYear() + '-' + String(today.getMonth() + 1).padStart(2, '0') + '-' + String(today.getDate()).padStart(2, '0');
-        const tomorrowISO = tomorrow.getFullYear() + '-' + String(tomorrow.getMonth() + 1).padStart(2, '0') + '-' + String(tomorrow.getDate()).padStart(2, '0');
-        
-        CACHED_SCHEDULING_AGENT_PROMPT = `${SHARED_INSTRUCTIONS}
+
+        const todayISO = today.toISOString().split('T')[0];
+        const tomorrowISO = tomorrow.toISOString().split('T')[0];
+
+        // Create personalized shared instructions for scheduling
+        const personalizedSharedInstructions = SHARED_INSTRUCTIONS
+            .replace(/{Patient_Name}/g, patientRecord.patientName)
+            .replace(/{Doctor_Name}/g, patientRecord.doctorName)
+            .replace(/{treatment_name}/g, patientRecord.prescriptions[0].medicationName);
+
+        CACHED_SCHEDULING_AGENT_PROMPT = `${personalizedSharedInstructions}
 
 ### YOUR CURRENT SPECIALTY: APPOINTMENT SCHEDULING ###
-You are helping a patient to book, reschedule, cancel, or check their appointments.
+You help ${patientRecord.patientName} book, reschedule, or cancel follow-up appointments with Dr. ${patientRecord.doctorName}. You cannot assist with any other requests.
 
 **IMPORTANT: CURRENT DATE CONTEXT**
-Today's date is: ${today.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })} (${todayISO})
-
-When users say:
+- Today's date is: ${today.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })} (${todayISO})
 - "tomorrow" = ${tomorrowISO}
-- "today" = ${todayISO}
-- "next week" = refer to dates 7 days from today
+- Patient was discharged recently and needs a follow-up appointment
 
-**Your available tools for this task:**
-- findAvailability: Checks available time slots for a specific date (format: YYYY-MM-DD).
-- createAppointment: Books a new appointment for a patient (requires appointmentDateTime in format: YYYY-MM-DDTHH:MM:SS).
-- listAppointments: Views existing appointments for a specific date (format: YYYY-MM-DD).
-- cancelAppointment: Cancels an existing appointment (requires date and time).
-- rescheduleAppointment: Moves an existing appointment to a new date/time (cancels old, creates new).
+**Business Hours (Clinic Time Zone):**
+- Available slots: 9:00 AM, 10:00 AM, 10:30 AM, 11:00 AM, 2:00 PM, 3:00 PM, 4:00 PM, 5:00 PM
 
-**Your Tool-Use Protocol for this task:**
-
-**For BOOKING new appointments:**
-1.  When a user wants to book, first parse their date request (e.g., "tomorrow" = ${tomorrowISO}).
-2.  Use the 'findAvailability' tool with that date in YYYY-MM-DD format.
-3.  Present the available slots from the tool and wait for the user to choose.
-4.  Once a time is chosen, combine the date and time to create appointmentDateTime (e.g., "${tomorrowISO}T15:00:00" for 3:00 PM tomorrow).
-5.  Use the 'createAppointment' tool with the full appointmentDateTime.
-6.  Always confirm the final booking details with the user using the correct date.
-
-**For CANCELING appointments:**
-1.  First use 'listAppointments' to show what appointments exist for the relevant date.
-2.  If the user specifies the date and time, use 'cancelAppointment' directly.
-3.  If they only mention time ("cancel my 9 AM"), assume they mean today unless they specify otherwise.
-4.  Always confirm the cancellation details.
-
-**For RESCHEDULING appointments:**
-1.  First identify the original appointment (date and time) that needs to be moved.
-2.  When user provides only a new time (e.g., "to 5:00 PM"), assume the same date as the original appointment.
-3.  When user provides a new date, ask for the preferred time if not specified.
-4.  Always use 'findAvailability' to check if the new time slot is available before rescheduling.
-5.  Format the newDateTime parameter correctly: combine the new date + time into ISO format (YYYY-MM-DDTHH:MM:SS).
-   - Example: For July 15th at 5:00 PM, use "2025-07-15T17:00:00"
-   - Convert 12-hour to 24-hour format: 5:00 PM = 17:00
-6.  Use 'rescheduleAppointment' with originalDate, originalTime, and newDateTime.
-7.  IMPORTANT: If the reschedule operation succeeds, acknowledge both the cancellation of the old appointment AND the creation of the new one.
-8.  If any communication errors occur AFTER a successful reschedule, still confirm the success to the patient.
-
-**RESCHEDULING Example:**
-User: "Reschedule my 3:30 PM appointment on July 15th to 5:00 PM"
-Steps: originalDate="2025-07-15", originalTime="3:30 PM", newDateTime="2025-07-15T17:00:00"
-
-**Error Recovery for Rescheduling:**
-- If you receive a "Successfully rescheduled" message from the tool but encounter communication issues afterward, always confirm the success to the patient
-- Never leave a patient uncertain about whether their rescheduling worked
-- If in doubt, ask them to check their calendar and offer to help further
-
-**Patient Communication Standards:**
-- Always acknowledge the specific appointment being discussed
-- Confirm availability before making changes
-- Provide clear confirmation of what was changed
-- If errors occur, explain clearly and offer alternatives
-
-**Business Hours Available:**
-9:00 AM, 10:00 AM, 10:30 AM, 11:00 AM, 2:00 PM, 3:00 PM, 4:00 PM, 5:00 PM
+**Your Tool-Use Protocol:**
+Use the scheduling tools to help ${patientRecord.patientName} book their follow-up appointment with Dr. ${patientRecord.doctorName}.
 `;
         PROMPT_CACHE_DATE = currentDateString;
     }
-    
     return CACHED_SCHEDULING_AGENT_PROMPT;
 }
 
-// Triage agent for routing user requests
-const TRIAGE_AGENT_PROMPT = `You are an internal routing agent. Your only job is to analyze the user's text and output a routing command.
-- If the user's request is about medication, prescriptions, side effects, or following doctor's orders, respond with only the text: "ROUTE_TO_ADHERENCE"
-- If the user's request is about booking, changing, or checking an appointment or the calendar, respond with only the text: "ROUTE_TO_SCHEDULING"
-- If the user's intent is unclear, ask a clarifying question.`;
+// =========================================================================================
+// IMPROVEMENT 2: The Triage Agent is simplified. The "connect to nurse" route is removed.
+// =========================================================================================
+const TRIAGE_AGENT_PROMPT = `You are a precise internal routing agent. Analyze the user's message and respond with ONLY a routing command.
+
+**Priority 1: Safety Override**
+- If user input contains keywords of severe distress ("breathless," "dizzy," "chest pain," "can't breathe," "emergency") -> "ROUTE_TO_SAFETY"
+
+**Priority 2: Completion Detection**
+- If user indicates NO PROBLEMS, NO ISSUES, or everything is FINE/GOOD/WELL with medication -> "ROUTE_TO_SCHEDULING"
+- Look for phrases: "no problems", "no issues", "fine", "good", "well", "no side effects", "everything is good", "managing well"
+
+**Priority 3: Task-Oriented Requests**
+- **User asks about medication**, prescriptions, side effects, doses, how to take medicine, pills, meds, "my medication", "medication details", "prescription", "taking", "picked up", "pharmacy" -> "ROUTE_TO_ADHERENCE"
+- **User asks about appointments**, scheduling, booking, calendar, visits, rescheduling, canceling -> "ROUTE_TO_SCHEDULING"
+
+**Priority 4: Affirmative Responses to Medication Questions**
+- If user responds with "yes", "no", "I have", "I picked", "I got", "I took", "I am taking", "already", "picked up", "paid" in context of medication -> "ROUTE_TO_ADHERENCE"
+
+**Priority 5: General Conversation / Unclear Intent**
+- If the user provides a simple greeting, confirmation, or a non-specific statement, or if the intent is truly unclear -> "ROUTE_TO_FALLBACK"
+
+Respond with ONLY the routing command. Do not add any other text.`;
+
 
 class EchoBot extends ActivityHandler {
-    constructor() {
+    constructor(patientRecord) { // Accept the patient record
         super();
         
-        // Initialize state management
-        this.activeAgent = 'triage'; // Start with triage
-        this.conversationHistory = [];
-        this.schedulingPlugin = new SchedulingPlugin();
-        this.conversationId = null;
-        this.hasSeenUser = new Set(); // Track which conversations have seen the user
+        if (!patientRecord) {
+            throw new Error("A valid patient record must be provided.");
+        }
+
+        this.patientRecord = patientRecord; // Store the patient's data
         
-        // Initialize rate limiting
-        this.rateLimiter = {
-            requests: 0,
-            resetTime: Date.now() + 60000 // Reset every minute
+        this.activeAgent = 'triage';
+        this.conversationHistory = [];
+        this.schedulingPlugin = new SchedulingPlugin(this.patientRecord.patientName); // Pass patient name to plugin
+        this.conversationId = null;
+        this.hasSeenUser = new Set();
+        
+        // Add conversation state tracking
+        this.conversationState = {
+            medicationPickedUp: false,
+            dosageDiscussed: false,
+            adherenceCompleted: false,
+            schedulingStarted: false,
+            schedulingCompleted: false
         };
         
-        console.log('[Bot] Healthcare voice agent initialized successfully');
-        console.log('[Bot] Active agent: triage');
+        console.log(`[Bot] Initialized for patient: ${this.patientRecord.patientName} (${this.patientRecord.DocumentID})`);
 
-        // Message handler with error handling and welcome logic
         this.onMessage(async (context, next) => {
             const userText = context.activity.text;
             this.conversationId = context.activity.conversation.id;
             
-            // Send welcome message for new conversations
             if (!this.hasSeenUser.has(this.conversationId)) {
                 this.hasSeenUser.add(this.conversationId);
-                try {
-                    const welcomeMessage = 'Hello! This is Jenny from the post-discharge care team. I\'m here to help with your medication follow-up or schedule appointments. How can I assist you today?';
-                    await context.sendActivity(MessageFactory.text(welcomeMessage, welcomeMessage));
-                    console.log('[Bot] First-interaction welcome message sent');
-                } catch (error) {
-                    console.error('[Bot] Error sending first-interaction welcome:', error.message);
-                }
-            }
-            
-            if (!userText || userText.trim().length === 0) {
-                await context.sendActivity('Please provide a message.');
+                
+                // Create a personalized welcome message
+                const welcomeMessage = `Hello ${this.patientRecord.patientName}! This is an AI assistant calling on behalf of Dr. ${this.patientRecord.doctorName}. I'm here to help with your medication follow-up for your recent discharge. How are you feeling today?`;
+                
+                const formattedWelcome = this.formatSpeechResponse(welcomeMessage, 'welcome');
+                await context.sendActivity(MessageFactory.text(welcomeMessage, formattedWelcome));
+                this.conversationHistory.push({ role: 'assistant', content: welcomeMessage });
                 await next();
                 return;
             }
-
-            // Rate limiting check
-            if (!this.checkRateLimit()) {
-                await context.sendActivity('Please wait a moment before sending another message.');
+            
+            if (!userText || userText.trim().length === 0) {
+                await context.sendActivity("I'm sorry, I didn't hear anything. Could you please repeat that?");
                 await next();
                 return;
             }
 
             try {
+                // For Bot Framework calls, don't add to conversation history 
+                // as processMessage now handles it directly
                 const response = await this.processMessage(userText);
-                await context.sendActivity(MessageFactory.text(response, response));
+                
+                // Enhanced voice formatting based on current agent context
+                const speechContext = this.getSpeechContextFromResponse(response);
+                const formattedResponse = this.formatSpeechResponse(response, speechContext);
+                await context.sendActivity(MessageFactory.text(response, formattedResponse));
                 
             } catch (error) {
-                console.error('[Bot] Error processing message:', {
-                    error: error.message,
-                    stack: error.stack,
-                    conversationId: this.conversationId,
-                    activeAgent: this.activeAgent
-                });
-                
-                // Provide user-friendly error response
+                console.error(`[Bot] Error processing message: ${error.message}`);
                 const errorResponse = this.getErrorResponse(error);
                 await context.sendActivity(MessageFactory.text(errorResponse, errorResponse));
             }
 
             await next();
         });
+    }
 
-        // Welcome message handler
-        this.onMembersAdded(async (context, next) => {
-            for (const member of context.activity.membersAdded) {
-                if (member.id !== context.activity.recipient.id) {
-                    try {
-                        // Send welcome message for new users
-                        const welcomeMessage = 'Hello! This is Jenny from the post-discharge care team. I\'m here to help with your medication follow-up or schedule appointments. How can I assist you today?';
-                        await context.sendActivity(MessageFactory.text(welcomeMessage, welcomeMessage));
-                        
-                        console.log('[Bot] Welcome message sent successfully');
-                    } catch (error) {
-                        console.error('[Bot] Error sending welcome message:', error.message);
-                        await context.sendActivity('Welcome! How can I help you today?');
-                    }
+    // =========================================================================================
+    // IMPROVEMENT 3: The processMessage function is simplified to remove the nurse-connection
+    //                logic and provide a clearer fallback path.
+    // =========================================================================================
+    async processMessage(userText) {
+        // Handle special start call trigger
+        if (userText === '__START_CALL__') {
+            const welcomeMessage = `Hello ${this.patientRecord.patientName}! This is Jenny calling on behalf of Dr. ${this.patientRecord.doctorName} for your post-discharge follow-up. I hope you're doing well today. I wanted to check in about your medication - have you had a chance to pick up your ${this.patientRecord.prescriptions[0].medicationName} prescription yet?`;
+            this.conversationHistory.push({ role: 'assistant', content: welcomeMessage });
+            return welcomeMessage; // Return clean text instead of SSML
+        }
+
+        // Add user message to conversation history
+        this.conversationHistory.push({ role: 'user', content: userText });
+
+        // Update conversation state based on user response
+        this.updateConversationState(userText);
+        
+        // Check conversation state to determine appropriate routing
+        console.log(`[Bot] Current conversation state:`, this.conversationState);
+        
+        const route = await this.callTriageAgent(userText);
+        console.log(`[Bot] Triage decision: ${route}`);
+
+        // Handle safety override with scheduling continuation
+        if (route.includes('ROUTE_TO_SAFETY')) {
+            const response = EMERGENCY_SAFETY_RESPONSE + " Now, would you like me to help you schedule your follow-up appointment with Dr. " + this.patientRecord.doctorName + "?";
+            this.conversationHistory.push({ role: 'assistant', content: response });
+            // Mark adherence as completed so next interaction goes to scheduling
+            this.conversationState.adherenceCompleted = true;
+            return response;
+        }
+        
+        // Determine target agent based on conversation state and triage
+        let targetAgent = null;
+        
+        if (route.includes('ROUTE_TO_ADHERENCE') && !this.conversationState.adherenceCompleted) {
+            targetAgent = 'adherence';
+        } else if (route.includes('ROUTE_TO_SCHEDULING') || 
+                  (this.conversationState.adherenceCompleted && !this.conversationState.schedulingCompleted)) {
+            targetAgent = 'scheduling';
+        } else if (!this.conversationState.adherenceCompleted) {
+            // If adherence is not completed, default to adherence agent
+            targetAgent = 'adherence';
+        }
+
+        if (targetAgent) {
+            if (this.activeAgent !== targetAgent) {
+                console.log(`[Bot] Switching agent from ${this.activeAgent} to ${targetAgent}.`);
+                this.activeAgent = targetAgent;
+            }
+            
+            let response;
+            if (this.activeAgent === 'adherence') {
+                response = await this.callAdherenceAgent(userText);
+            } else if (this.activeAgent === 'scheduling') {
+                if (!this.conversationState.schedulingStarted) {
+                    this.conversationState.schedulingStarted = true;
+                    response = "Great! Now let's schedule your follow-up appointment with Dr. " + this.patientRecord.doctorName + ". What days work best for you?";
+                } else {
+                    response = await this.handleSchedulingWithTools();
                 }
             }
-            await next();
-        });
-    }
-
-    // Rate limiting check (max 30 requests per minute)
-    checkRateLimit() {
-        const now = Date.now();
-        
-        if (now > this.rateLimiter.resetTime) {
-            this.rateLimiter.requests = 0;
-            this.rateLimiter.resetTime = now + 60000;
-        }
-        
-        // Check if within limits (max 30 requests per minute)
-        if (this.rateLimiter.requests >= 30) {
-            return false;
-        }
-        
-        this.rateLimiter.requests++;
-        return true;
-    }
-
-    // Process message through appropriate agent (triage → adherence/scheduling)
-    async processMessage(userText) {
-        let response;
-
-        // Reset to triage for topic changes
-        if (this.activeAgent !== 'triage' && this.shouldResetToTriage(userText)) {
-            console.log('[Bot] Resetting to triage for new topic');
-            this.activeAgent = 'triage';
-            this.conversationHistory = [];
-        }
-
-        if (this.activeAgent === 'triage') {
-            // Use triage agent to determine routing
-            response = await this.callTriageAgent(userText);
             
-            if (response.includes('ROUTE_TO_ADHERENCE')) {
-                this.activeAgent = 'adherence';
-                this.conversationHistory = [];
-                console.log('[Bot] Agent switched: adherence');
-                // Process the original message with adherence agent
-                response = await this.callAdherenceAgent(userText);
-            } else if (response.includes('ROUTE_TO_SCHEDULING')) {
-                this.activeAgent = 'scheduling';
-                this.conversationHistory = [];
-                console.log('[Bot] Agent switched: scheduling');
-                // Process the original message with scheduling agent
-                response = await this.handleSchedulingWithTools(userText);
-            }
-            // If no routing decision, send triage response (clarifying question)
-        } else if (this.activeAgent === 'adherence') {
-            response = await this.callAdherenceAgent(userText);
-        } else if (this.activeAgent === 'scheduling') {
-            response = await this.handleSchedulingWithTools(userText);
+            this.conversationHistory.push({ role: 'assistant', content: response });
+            return response;
         }
 
+        // Enhanced fallback logic
+        console.log('[Bot] Executing fallback logic.');
+        
+        if (this.conversationState.adherenceCompleted && !this.conversationState.schedulingStarted) {
+            this.conversationState.schedulingStarted = true;
+            const response = "Perfect! Now let's schedule your follow-up appointment with Dr. " + this.patientRecord.doctorName + ". What days work best for you?";
+            this.conversationHistory.push({ role: 'assistant', content: response });
+            return response;
+        }
+        
+        const lastBotMessage = this.conversationHistory[this.conversationHistory.length - 2]?.content;
+        if (lastBotMessage && lastBotMessage.includes("I want to make sure I understand")) {
+            const response = "I understand you're trying to help. Let me ask directly - do you have any side effects from your medication, or would you like to schedule your follow-up appointment?";
+            this.conversationHistory.push({ role: 'assistant', content: response });
+            return response;
+        }
+        
+        // For first-time unclear responses, be more helpful
+        const response = `I want to make sure I understand you correctly. I'm calling to check on your ${this.patientRecord.prescriptions[0].medicationName} prescription. Are you taking it as prescribed, or do you have any questions about your medication?`;
+        this.conversationHistory.push({ role: 'assistant', content: response });
         return response;
     }
-
-    // Determine if we should reset to triage for topic changes
-    shouldResetToTriage(userText) {
-        const lowerText = userText.toLowerCase();
-        
-        // Keywords that indicate a topic change
-        const schedulingKeywords = ['appointment', 'schedule', 'book', 'calendar', 'see doctor', 'visit'];
-        const medicationKeywords = ['medication', 'medicine', 'prescription', 'pill', 'dose', 'side effect'];
-        
-        // If currently in adherence mode but user mentions scheduling
-        if (this.activeAgent === 'adherence' && schedulingKeywords.some(keyword => lowerText.includes(keyword))) {
-            return true;
-        }
-        
-        // If currently in scheduling mode but user mentions medication
-        if (this.activeAgent === 'scheduling' && medicationKeywords.some(keyword => lowerText.includes(keyword))) {
-            return true;
-        }
-        
-        return false;
-    }
-
-    /**
-     * Get user-friendly error response based on error type
-     * @param {Error} error - The error object
-     * @returns {string} - User-friendly error message
-     */
+    
     getErrorResponse(error) {
         if (error.message.includes('timeout')) {
-            return 'I apologize, but the response is taking longer than expected. Please try again.';
-        } else if (error.message.includes('rate limit')) {
-            return 'I need to slow down a bit. Please wait a moment before trying again.';
+            return "I'm having a little trouble connecting right now. Could you please say that again?";
         } else if (error.message.includes('authentication')) {
-            return 'I\'m having trouble connecting to my services. Please try again later.';
+            return "I'm having trouble with my system connection. We may need to try again later.";
         } else {
-            return 'I apologize, but I encountered an error. Please try again or contact support if the issue persists.';
+            return "I'm sorry, I encountered a technical issue. Let's try that one more time.";
         }
     }
 
-    /**
-     * Call the triage agent to determine routing
-     * @param {string} userText - The user's message
-     * @returns {Promise<string>} - The triage response
-     */
     async callTriageAgent(userText) {
         try {
-            const response = await this.callOpenAI(TRIAGE_AGENT_PROMPT, [{ role: 'user', content: userText }], false);
+            const lastBotMessage = this.conversationHistory[this.conversationHistory.length - 2]?.content || 'None';
+            
+            // Create enhanced context for triage decision
+            const conversationContext = `
+**Conversation State:**
+- Medication picked up: ${this.conversationState.medicationPickedUp}
+- Dosage discussed: ${this.conversationState.dosageDiscussed}
+- Adherence completed: ${this.conversationState.adherenceCompleted}
+- Scheduling started: ${this.conversationState.schedulingStarted}
+
+**Last bot message:** "${lastBotMessage}"
+**User message:** "${userText}"
+
+**Routing Priority:**
+1. If adherence is completed, prefer ROUTE_TO_SCHEDULING
+2. If medication/adherence topics are still active, prefer ROUTE_TO_ADHERENCE
+3. Use standard routing rules for new topics
+`;
+            
+            const response = await this.callOpenAI(TRIAGE_AGENT_PROMPT, [{ role: 'user', content: conversationContext }], false);
             return response.content;
         } catch (error) {
             console.error('[Bot] Triage agent error:', error.message);
@@ -355,108 +346,147 @@ class EchoBot extends ActivityHandler {
         }
     }
 
-    /**
-     * Call the adherence agent for medication-related conversations
-     * @param {string} userText - The user's message
-     * @returns {Promise<string>} - The adherence agent response
-     */
     async callAdherenceAgent(userText) {
         try {
-            // Add to conversation history
-            this.conversationHistory.push({ role: 'user', content: userText });
+            // Get the patient's primary medication
+            const primaryMedication = this.patientRecord.prescriptions[0];
+            const medicationDetails = `${primaryMedication.medicationName} ${primaryMedication.dosage}, taken ${primaryMedication.frequency}`;
             
-            const response = await this.callOpenAI(ADHERENCE_AGENT_PROMPT, this.conversationHistory, false);
+            // Create context-aware prompt based on conversation state
+            let contextualPrompt = ADHERENCE_AGENT_PROMPT;
             
-            // Validate response content
+            // Add conversation state context
+            if (this.conversationState.medicationPickedUp && this.conversationState.dosageDiscussed) {
+                contextualPrompt += `\n\n**IMPORTANT CONVERSATION CONTEXT:**
+- Patient has already confirmed they picked up their medication
+- Patient has confirmed they are taking the correct dosage
+- DO NOT repeat questions about picking up medication or dosage
+- Focus on side effects, missed doses, or transition to scheduling
+- If patient indicates no problems, transition to scheduling with: "The last thing is to schedule your follow-up appointment with Dr. ${this.patientRecord.doctorName}. Are you available to do that now?"`;
+            } else if (this.conversationState.medicationPickedUp) {
+                contextualPrompt += `\n\n**IMPORTANT CONVERSATION CONTEXT:**
+- Patient has already confirmed they picked up their medication
+- DO NOT ask about picking up medication again
+- Focus on dosage and timing questions`;
+            }
+            
+            // Check if user response indicates completion (no issues)
+            const userResponse = userText.toLowerCase();
+            // Non-severe side effect handling (headache, fever, etc.)
+            if (userResponse.includes('headache') || userResponse.includes('fever')) {
+                this.conversationState.adherenceCompleted = true;
+                return `Thank you for sharing. I'll notify Dr. ${this.patientRecord.doctorName}'s team about your headache and fever. Now, let's schedule your follow-up appointment with Dr. ${this.patientRecord.doctorName}. Are you available to do that now?`;
+            }
+            if ((userResponse.includes('no') && (userResponse.includes('problem') || userResponse.includes('side effect') || userResponse.includes('issue'))) ||
+                (userResponse.includes('fine') || userResponse.includes('good') || userResponse.includes('well')) ||
+                (userResponse.includes('everything is good') || userResponse.includes('managing well')) ||
+                (userResponse.includes('regular') && userResponse.includes('taking'))) {
+                // User indicates no issues, transition to scheduling
+                this.conversationState.adherenceCompleted = true;
+                console.log('[Bot] Adherence completed due to no problems indicated');
+                return `Perfect! It sounds like you're managing your medication well. The last thing is to schedule your follow-up appointment with Dr. ${this.patientRecord.doctorName}. Are you available to do that now?`;
+            }
+            
+            // Personalize the prompt with the patient's medication details
+            const personalizedAdherencePrompt = contextualPrompt
+                .replace(/{treatment_name}/g, primaryMedication.medicationName)
+                .replace(/{medication_details}/g, medicationDetails)
+                .replace(/{Patient_Name}/g, this.patientRecord.patientName)
+                .replace(/{Doctor_Name}/g, this.patientRecord.doctorName);
+
+            const response = await this.callOpenAI(personalizedAdherencePrompt, this.conversationHistory, false);
             if (!response || !response.content) {
                 throw new Error('Invalid response from adherence agent');
             }
             
-            this.conversationHistory.push({ role: 'assistant', content: response.content });
-            return response.content;
+            // Check if adherence is completed based on response content
+            if (response.content.includes('schedule your follow-up appointment') || 
+                response.content.includes('The last thing is to schedule')) {
+                this.conversationState.adherenceCompleted = true;
+                console.log('[Bot] Adherence phase completed, ready to transition to scheduling');
+            }
             
+            return response.content;
         } catch (error) {
             console.error('[Bot] Adherence agent error:', error.message);
             throw new Error('Failed to process adherence request');
         }
     }
 
-    /**
-     * Handle scheduling conversations with tool support
-     * @param {string} userText - The user's message
-     * @returns {Promise<string>} - The scheduling response
-     */
-    async handleSchedulingWithTools(userText) {
+    // Helper: Get summary of all upcoming appointments
+    async getAppointmentSummary() {
         try {
-            // Add the new user message to the conversation history
-            this.conversationHistory.push({ role: 'user', content: userText });
-
-            // Call the OpenAI model, which may respond with text or a tool call request
-            const aiResponse = await this.callOpenAI(getSchedulingAgentPrompt(), this.conversationHistory, true);
-
-            // Validate response
-            if (!aiResponse) {
-                throw new Error('Invalid response from scheduling agent');
+            // List all appointments for today and future
+            const today = new Date();
+            const dateISO = today.toISOString().split('T')[0];
+            const response = await this.schedulingPlugin.listAppointments(dateISO);
+            if (response && Array.isArray(response) && response.length > 0) {
+                let summary = "Here is your updated appointment schedule:\n";
+                response.forEach((appt, idx) => {
+                    summary += `${idx + 1}. ${appt.subject} at ${new Date(appt.startDateTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}\n`;
+                });
+                return summary;
             }
+        } catch (e) { return ""; }
+        return "";
+    }
 
-            // --- Check if the AI wants to call a tool ---
+    // Update conversation state based on user input
+    updateConversationState(userText) {
+        const lowerText = userText.toLowerCase();
+        
+        // Check for medication pickup confirmation
+        if ((lowerText.includes('pick') || lowerText.includes('got') || lowerText.includes('have')) && 
+            (lowerText.includes('medication') || lowerText.includes('prescription'))) {
+            this.conversationState.medicationPickedUp = true;
+            console.log('[Bot] State updated: medication picked up');
+        }
+        
+        // Check for dosage/schedule confirmation
+        if ((lowerText.includes('once') || lowerText.includes('daily') || lowerText.includes('day') || 
+             lowerText.includes('regularly') || lowerText.includes('schedule') || lowerText.includes('morning') || 
+             lowerText.includes('evening') || lowerText.includes('taking')) && 
+            (lowerText.includes('taking') || lowerText.includes('yes') || lowerText.includes('am') || 
+             lowerText.includes('every'))) {
+            this.conversationState.dosageDiscussed = true;
+            console.log('[Bot] State updated: dosage discussed');
+        }
+        
+        // Check for "no problems/issues" responses - these should complete adherence
+        if ((lowerText.includes('no') && 
+             (lowerText.includes('problem') || lowerText.includes('issue') || lowerText.includes('side effect'))) ||
+            (lowerText.includes('fine') || lowerText.includes('good') || lowerText.includes('well') || 
+             lowerText.includes('everything is good') || lowerText.includes('managing well'))) {
+            this.conversationState.adherenceCompleted = true;
+            console.log('[Bot] State updated: adherence completed (no problems indicated)');
+        }
+        
+        // Check for scheduling-related responses
+        if (lowerText.includes('schedule') || lowerText.includes('appointment') || 
+            lowerText.includes('book') || lowerText.includes('available')) {
+            this.conversationState.schedulingStarted = true;
+            console.log('[Bot] State updated: scheduling started');
+        }
+    }
+
+    async handleSchedulingWithTools() {
+        try {
+            const aiResponse = await this.callOpenAI(getSchedulingAgentPrompt(this.patientRecord), this.conversationHistory, true);
+
+            if (!aiResponse) throw new Error('Invalid response from scheduling agent');
+
             if (aiResponse.tool_calls) {
                 const toolCall = aiResponse.tool_calls[0];
                 const functionName = toolCall.function.name;
-                
-                // Validate tool call
-                if (!functionName || !toolCall.function.arguments) {
-                    throw new Error('Invalid tool call format');
-                }
+                const functionArgs = JSON.parse(toolCall.function.arguments);
 
-                let functionArgs;
-                try {
-                    functionArgs = JSON.parse(toolCall.function.arguments);
-                } catch (parseError) {
-                    console.error('[Bot] Tool arguments parsing error:', parseError.message);
-                    throw new Error('Invalid tool arguments format');
-                }
+                console.log(`[Bot] Tool requested: ${functionName}`);
 
-                // Only log function name for security - no sensitive patient data
-                console.log(`[Bot] Tool executed: ${functionName}`);
-
-                // Execute the requested tool function with error handling
                 let toolResult = '';
                 try {
-                    if (functionName === 'findAvailability') {
-                        if (!functionArgs.date) {
-                            throw new Error('Missing required date parameter');
-                        }
-                        toolResult = await this.schedulingPlugin.findAvailability(functionArgs.date);
-                    } else if (functionName === 'createAppointment') {
-                        if (!functionArgs.appointmentDateTime) {
-                            throw new Error('Missing required appointmentDateTime parameter');
-                        }
-                        // Use provided patient name or default
-                        const patientName = functionArgs.patientName || 'Patient';
-                        toolResult = await this.schedulingPlugin.createAppointment(functionArgs.appointmentDateTime, patientName);
-                    } else if (functionName === 'listAppointments') {
-                        if (!functionArgs.date) {
-                            throw new Error('Missing required date parameter');
-                        }
-                        toolResult = await this.schedulingPlugin.listAppointments(functionArgs.date);
-                    } else if (functionName === 'cancelAppointment') {
-                        if (!functionArgs.date || !functionArgs.time) {
-                            throw new Error('Missing required date or time parameter');
-                        }
-                        toolResult = await this.schedulingPlugin.cancelAppointment(functionArgs.date, functionArgs.time);
-                    } else if (functionName === 'rescheduleAppointment') {
-                        if (!functionArgs.originalDate || !functionArgs.originalTime || !functionArgs.newDateTime) {
-                            throw new Error('Missing required originalDate, originalTime, or newDateTime parameter');
-                        }
-                        // Use provided patient name or default
-                        const patientName = functionArgs.patientName || 'Patient';
-                        toolResult = await this.schedulingPlugin.rescheduleAppointment(
-                            functionArgs.originalDate, 
-                            functionArgs.originalTime, 
-                            functionArgs.newDateTime, 
-                            patientName
-                        );
+                    // Dynamically call the plugin method
+                    if (typeof this.schedulingPlugin[functionName] === 'function') {
+                        toolResult = await this.schedulingPlugin[functionName](...Object.values(functionArgs));
                     } else {
                         throw new Error(`Unknown function: ${functionName}`);
                     }
@@ -465,227 +495,70 @@ class EchoBot extends ActivityHandler {
                     toolResult = `Error: ${toolError.message}`;
                 }
 
-                // Add the tool call and its result to the history
                 this.conversationHistory.push({ role: 'assistant', content: null, tool_calls: aiResponse.tool_calls });
                 this.conversationHistory.push({ role: 'tool', tool_call_id: toolCall.id, name: functionName, content: toolResult });
+                
+                // Final call to get a natural language response
+                const finalResponse = await this.callOpenAI(getSchedulingAgentPrompt(this.patientRecord), this.conversationHistory, true);
 
-                // Call OpenAI *again* with the tool's result so it can formulate a natural language response
-                console.log('[Bot] Making final call to OpenAI with history length:', this.conversationHistory.length);
-                
-                let finalResponse;
-                try {
-                    finalResponse = await this.callOpenAI(getSchedulingAgentPrompt(), this.conversationHistory, true);
-                } catch (finalCallError) {
-                    console.error('[Bot] Final OpenAI call failed:', finalCallError.message);
-                    
-                    // Special handling for rescheduling operations that may have partially succeeded
-                    if (functionName === 'rescheduleAppointment' && toolResult.includes('Successfully rescheduled')) {
-                        const successMessage = "Your appointment has been successfully rescheduled. Please let me know if you need anything else!";
-                        this.conversationHistory.push({ role: 'assistant', content: successMessage });
-                        return successMessage;
+                // Appointment summary after create/reschedule/cancel
+                if (['createAppointment', 'rescheduleAppointment', 'cancelAppointment'].includes(functionName)) {
+                    const summary = await this.getAppointmentSummary();
+                    if (finalResponse && finalResponse.content) {
+                        return `${finalResponse.content}\n\n${summary}`;
+                    } else if (summary) {
+                        return summary;
                     }
-                    
-                    // For other operations that succeeded, provide a generic success response
-                    if (toolResult.includes('successfully') || toolResult.includes('Successfully')) {
-                        const successMessage = "I've processed your request successfully. Please let me know if you need anything else!";
-                        this.conversationHistory.push({ role: 'assistant', content: successMessage });
-                        return successMessage;
-                    }
-                    
-                    // If the tool operation itself failed, return the error
-                    if (toolResult.includes('Error:') || toolResult.includes('Failed')) {
-                        this.conversationHistory.push({ role: 'assistant', content: toolResult });
-                        return toolResult;
-                    }
-                    
-                    // Final fallback for unexpected errors
-                    const fallbackMessage = "I encountered a communication issue, but your request may have been processed. Please check your calendar and let me know if you need assistance.";
-                    this.conversationHistory.push({ role: 'assistant', content: fallbackMessage });
-                    return fallbackMessage;
                 }
-                
-                // The callOpenAI function returns the message object from OpenAI
+
                 if (!finalResponse || !finalResponse.content) {
-                    console.error('[Bot] Invalid final response - finalResponse:', JSON.stringify(finalResponse, null, 2));
-                    
-                    // Enhanced fallback logic based on tool result
-                    if (toolResult.includes('successfully') || toolResult.includes('Successfully')) {
-                        const successMessage = "I've processed your request successfully. Please let me know if you need anything else!";
-                        this.conversationHistory.push({ role: 'assistant', content: successMessage });
+                     // If the final LLM call fails but the tool succeeded, create a graceful fallback response.
+                    if (toolResult && !toolResult.toLowerCase().includes('error') && !toolResult.toLowerCase().includes('fail')) {
+                        const successMessage = "I've just processed your request. Please let me know if you need anything else!";
                         return successMessage;
-                    } else {
-                        // Fallback: return a generic message
-                        const genericMessage = "I've processed your request. Please let me know if you need anything else!";
-                        this.conversationHistory.push({ role: 'assistant', content: genericMessage });
-                        return genericMessage;
                     }
+                    throw new Error('No content in final AI response and tool result was an error.');
                 }
                 
-                this.conversationHistory.push({ role: 'assistant', content: finalResponse.content });
                 return finalResponse.content;
+
             } else {
-                // --- If no tool call, just send the AI's text response ---
-                if (!aiResponse.content) {
-                    throw new Error('No content in AI response');
-                }
-                
-                this.conversationHistory.push({ role: 'assistant', content: aiResponse.content });
+                if (!aiResponse.content) throw new Error('No content in AI response');
                 return aiResponse.content;
             }
             
         } catch (error) {
             console.error('[Bot] Scheduling error:', error.message);
-            throw new Error('Failed to process scheduling request');
+            return "I apologize, I'm having trouble accessing the appointment calendar right now. Can we try again in a few moments?";
         }
     }
-
-    /**
-     * Calls the Azure OpenAI API with the current conversation history and optional tools.
-     * Implements retry logic with exponential backoff for better reliability.
-     * @param {string} systemPrompt The system prompt defining the agent's role.
-     * @param {Array} history The history of the conversation.
-     * @param {boolean} includeTools Whether to include scheduling tools (default: true for scheduling agent).
-     * @returns {Promise<object>} The full message object from the AI, which could include text or tool calls.
-     */
+    
+    // callOpenAI and other helper functions remain the same as v2.1
     async callOpenAI(systemPrompt, history, includeTools = true) {
-        const messages = [
-            { role: 'system', content: systemPrompt },
-            ...history
-        ];
+        const messages = [{ role: 'system', content: systemPrompt }, ...history];
 
-        // Define the tools available to the AI (only for scheduling agent)
         const tools = includeTools ? [
-            {
-                type: 'function',
-                function: {
-                    name: 'findAvailability',
-                    description: 'Checks the calendar for available appointment slots on a specific date.',
-                    parameters: {
-                        type: 'object',
-                        properties: { 
-                            date: { 
-                                type: 'string', 
-                                description: 'The date to check, in YYYY-MM-DD format.',
-                                pattern: '^\\d{4}-\\d{2}-\\d{2}$'
-                            } 
-                        },
-                        required: ['date'],
-                    },
-                },
-            },
-            {
-                type: 'function',
-                function: {
-                    name: 'createAppointment',
-                    description: 'Books a new appointment in the calendar for a patient.',
-                    parameters: {
-                        type: 'object',
-                        properties: {
-                            appointmentDateTime: { 
-                                type: 'string', 
-                                description: 'The appointment start time in ISO 8601 format (e.g., "2025-07-15T14:00:00").',
-                                pattern: '^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}$'
-                            },
-                            patientName: { 
-                                type: 'string', 
-                                description: "The patient's name.",
-                                maxLength: 100
-                            },
-                        },
-                        required: ['appointmentDateTime', 'patientName'],
-                    },
-                },
-            },
-            {
-                type: 'function',
-                function: {
-                    name: 'listAppointments',
-                    description: 'Lists all appointments for a specific date to verify bookings.',
-                    parameters: {
-                        type: 'object',
-                        properties: { 
-                            date: { 
-                                type: 'string', 
-                                description: 'The date to check appointments for, in YYYY-MM-DD format.',
-                                pattern: '^\\d{4}-\\d{2}-\\d{2}$'
-                            } 
-                        },
-                        required: ['date'],
-                    },
-                },
-            },
-            {
-                type: 'function',
-                function: {
-                    name: 'cancelAppointment',
-                    description: 'Cancels an existing appointment on a specific date and time.',
-                    parameters: {
-                        type: 'object',
-                        properties: {
-                            date: { 
-                                type: 'string', 
-                                description: 'The date of the appointment to cancel, in YYYY-MM-DD format.',
-                                pattern: '^\\d{4}-\\d{2}-\\d{2}$'
-                            },
-                            time: { 
-                                type: 'string', 
-                                description: 'The time of the appointment to cancel (e.g., "9:00 AM", "14:00", "2:00 PM").'
-                            }
-                        },
-                        required: ['date', 'time'],
-                    },
-                },
-            },
-            {
-                type: 'function',
-                function: {
-                    name: 'rescheduleAppointment',
-                    description: 'Reschedules an existing appointment by canceling the old one and creating a new one.',
-                    parameters: {
-                        type: 'object',
-                        properties: {
-                            originalDate: { 
-                                type: 'string', 
-                                description: 'The date of the original appointment to reschedule, in YYYY-MM-DD format.',
-                                pattern: '^\\d{4}-\\d{2}-\\d{2}$'
-                            },
-                            originalTime: { 
-                                type: 'string', 
-                                description: 'The time of the original appointment to reschedule (e.g., "9:00 AM", "14:00", "2:00 PM").'
-                            },
-                            newDateTime: { 
-                                type: 'string', 
-                                description: 'The new appointment date and time in ISO 8601 format (e.g., "2025-07-17T10:00:00").',
-                                pattern: '^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}$'
-                            },
-                            patientName: { 
-                                type: 'string', 
-                                description: "The patient's name for the rescheduled appointment.",
-                                maxLength: 100
-                            }
-                        },
-                        required: ['originalDate', 'originalTime', 'newDateTime', 'patientName'],
-                    },
-                },
-            },
+            { type: 'function', function: { name: 'findAvailability', description: 'Checks for available appointment slots on a specific date (YYYY-MM-DD).', parameters: { type: 'object', properties: { date: { type: 'string', description: 'The date to check, in YYYY-MM-DD format.' } }, required: ['date'] } } },
+            { type: 'function', function: { name: 'createAppointment', description: 'Books a new appointment.', parameters: { type: 'object', properties: { appointmentDateTime: { type: 'string', description: 'The appointment time in ISO 8601 format (e.g., "2025-07-15T14:00:00").' }, patientName: { type: 'string', description: "The patient's name." } }, required: ['appointmentDateTime', 'patientName'] } } },
+            { type: 'function', function: { name: 'listAppointments', description: 'Lists all appointments for a specific date (YYYY-MM-DD).', parameters: { type: 'object', properties: { date: { type: 'string', description: 'The date to check, in YYYY-MM-DD format.' } }, required: ['date'] } } },
+            { type: 'function', function: { name: 'cancelAppointment', description: 'Cancels an existing appointment.', parameters: { type: 'object', properties: { date: { type: 'string', description: 'The appointment date in YYYY-MM-DD format.' }, time: { type: 'string', description: 'The appointment time (e.g., "9:00 AM").' } }, required: ['date', 'time'] } } },
+            { type: 'function', function: { name: 'rescheduleAppointment', description: 'Reschedules an appointment.', parameters: { type: 'object', properties: { originalDate: { type: 'string', description: 'The original appointment date (YYYY-MM-DD).' }, originalTime: { type: 'string', description: 'The original appointment time.' }, newDateTime: { type: 'string', description: 'The new appointment time in ISO 8601 format.' }, patientName: { type: 'string', description: "The patient's name." } }, required: ['originalDate', 'originalTime', 'newDateTime', 'patientName'] } } },
         ] : [];
 
         const requestBody = {
-            messages: messages,
+            messages,
             max_tokens: 800,
-            temperature: 0.7,
+            temperature: 0.6,
             top_p: 0.95,
             frequency_penalty: 0,
             presence_penalty: 0
         };
 
-        // Include tools when explicitly requested (for scheduling agent)
-        if (includeTools) {
+        if (includeTools && tools.length > 0) {
             requestBody.tools = tools;
             requestBody.tool_choice = 'auto';
         }
 
-        // Implement retry logic with exponential backoff
         let lastError;
         for (let attempt = 0; attempt < AZURE_OPENAI_CONFIG.maxRetries; attempt++) {
             try {
@@ -696,100 +569,178 @@ class EchoBot extends ActivityHandler {
                     `${AZURE_OPENAI_CONFIG.endpoint}openai/deployments/${AZURE_OPENAI_CONFIG.deploymentName}/chat/completions?api-version=${AZURE_OPENAI_CONFIG.apiVersion}`,
                     requestBody,
                     {
-                        headers: { 
-                            'api-key': AZURE_OPENAI_CONFIG.apiKey, 
-                            'Content-Type': 'application/json',
-                            'User-Agent': 'Healthcare-Voice-Bot/1.0'
-                        },
+                        headers: { 'api-key': AZURE_OPENAI_CONFIG.apiKey, 'Content-Type': 'application/json' },
                         signal: controller.signal
                     }
                 );
-
                 clearTimeout(timeoutId);
 
-                // Validate response structure
-                if (!response.data || !response.data.choices || !response.data.choices[0]) {
+                if (!response.data?.choices?.[0]?.message) {
                     throw new Error('Invalid response structure from Azure OpenAI');
                 }
-
-                const message = response.data.choices[0].message;
-                if (!message) {
-                    throw new Error('No message in response from Azure OpenAI');
-                }
-
-                // Log successful call (without sensitive data)
+                
                 console.log(`[Bot] Azure OpenAI call successful (attempt ${attempt + 1})`);
-                return message;
+                return response.data.choices[0].message;
 
             } catch (error) {
                 lastError = error;
-                
-                // Log error details (without sensitive data)
-                console.error(`[Bot] Azure OpenAI API error (attempt ${attempt + 1}):`, {
-                    status: error.response?.status,
-                    statusText: error.response?.statusText,
-                    message: error.message,
-                    isTimeout: error.name === 'AbortError'
-                });
+                console.error(`[Bot] Azure OpenAI API error (attempt ${attempt + 1}):`, error.message);
 
-                // Check if this is a retryable error
                 if (this.isRetryableError(error)) {
                     if (attempt < AZURE_OPENAI_CONFIG.maxRetries - 1) {
-                        // Exponential backoff with jitter
                         const delay = AZURE_OPENAI_CONFIG.retryDelayMs * Math.pow(2, attempt) + Math.random() * 1000;
-                        console.log(`[Bot] Retrying in ${delay}ms...`);
+                        console.log(`[Bot] Retrying in ${delay.toFixed(0)}ms...`);
                         await this.sleep(delay);
                         continue;
                     }
                 }
-                
-                // Non-retryable error or max retries exceeded
                 break;
             }
         }
 
-        // All retries failed
-        console.error('[Bot] Azure OpenAI API failed after all retries');
-        
-        // Return appropriate error response based on error type
-        if (lastError.response?.status === 429) {
-            throw new Error('rate limit');
-        } else if (lastError.response?.status === 401 || lastError.response?.status === 403) {
-            throw new Error('authentication');
-        } else if (lastError.name === 'AbortError') {
-            throw new Error('timeout');
-        } else {
-            throw new Error('API error');
-        }
+        console.error('[Bot] Azure OpenAI API failed after all retries.');
+        if (lastError.response?.status === 429) throw new Error('rate limit');
+        if (lastError.response?.status === 401) throw new Error('authentication');
+        if (lastError.name === 'AbortError') throw new Error('timeout');
+        throw new Error('API error');
     }
 
-    /**
-     * Determine if an error is retryable
-     * @param {Error} error - The error to check
-     * @returns {boolean} - Whether the error is retryable
-     */
     isRetryableError(error) {
-        // Retry on network errors, timeouts, and certain HTTP status codes
-        if (error.name === 'AbortError' || error.code === 'ECONNRESET' || error.code === 'ETIMEDOUT') {
+        if (error.name === 'AbortError' || ['ECONNRESET', 'ETIMEDOUT'].includes(error.code)) {
             return true;
         }
-        
         if (error.response) {
             const status = error.response.status;
-            // Retry on server errors (5xx) and rate limiting (429)
             return status >= 500 || status === 429;
         }
-        
         return false;
     }
 
-    /**
-     * Sleep for a specified duration
-     * @param {number} ms - Milliseconds to sleep
-     * @returns {Promise<void>}
-     */
     sleep(ms) {
         return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    // Determine appropriate speech context based on response content and active agent
+    getSpeechContextFromResponse(response) {
+        // Emergency context for safety responses
+        if (response.includes('dial 911') || response.includes('emergency services')) {
+            return 'emergency';
+        }
+        
+        // Context based on current active agent
+        if (this.activeAgent === 'adherence') {
+            return 'adherence';
+        } else if (this.activeAgent === 'scheduling') {
+            return 'scheduling';
+        }
+        
+        // Content-based context detection
+        if (response.includes('medication') || response.includes('prescription') || 
+            response.includes('dosage') || response.includes('side effects')) {
+            return 'adherence';
+        }
+        
+        if (response.includes('appointment') || response.includes('schedule') || 
+            response.includes('AM') || response.includes('PM')) {
+            return 'scheduling';
+        }
+        
+        return 'normal';
+    }
+
+    // Enhanced speech formatting for better TTS quality
+    formatSpeechResponse(text, context = 'normal') {
+        const ssmlTemplates = {
+            welcome: `<speak version="1.0" xml:lang="en-US">
+                <voice name="en-US-JennyNeural" style="customerservice" styledegree="0.8">
+                    <prosody rate="0.9" pitch="medium">
+                        ${text}
+                    </prosody>
+                </voice>
+            </speak>`,
+            
+            adherence: `<speak version="1.0" xml:lang="en-US">
+                <voice name="en-US-JennyNeural" style="empathetic">
+                    <prosody rate="0.85" pitch="medium">
+                        ${text.replace(/(\d+)\s*(mg|milligrams?|mcg|micrograms?)/gi, 
+                            '<emphasis level="moderate">$1 $2</emphasis>')
+                            .replace(/(once|twice|three times|four times)\s+(daily|a day|per day)/gi,
+                            '<emphasis level="moderate">$1 $2</emphasis>')
+                            .replace(/(levothyroxine|metformin|amoxicillin|lisinopril|ibuprofen)/gi,
+                            '<emphasis level="moderate">$1</emphasis>')}
+                    </prosody>
+                </voice>
+            </speak>`,
+            
+            scheduling: `<speak version="1.0" xml:lang="en-US">
+                <voice name="en-US-JennyNeural" style="customerservice">
+                    <prosody rate="0.9">
+                        ${text.replace(/(\d{1,2}:\d{2}\s*(AM|PM))/gi, 
+                            '<emphasis level="strong">$1</emphasis>')}
+                    </prosody>
+                </voice>
+            </speak>`,
+            
+            emergency: `<speak version="1.0" xml:lang="en-US">
+                <voice name="en-US-JennyNeural" style="urgent">
+                    <prosody rate="1.0" pitch="high">
+                        <emphasis level="strong">${text}</emphasis>
+                    </prosody>
+                </voice>
+            </speak>`,
+            
+            normal: `<speak version="1.0" xml:lang="en-US">
+                <voice name="en-US-JennyNeural" style="customerservice">
+                    <prosody rate="0.9" pitch="medium">
+                        ${text}
+                    </prosody>
+                </voice>
+            </speak>`
+        };
+        
+        return ssmlTemplates[context] || ssmlTemplates.normal;
+    }
+
+    // Save patient call data and update the JSON file
+    async savePatientCallData(adherenceData = null, appointmentData = null) {
+        try {
+            const patientsFilePath = path.join(__dirname, 'patients.json');
+            const patientsData = JSON.parse(fs.readFileSync(patientsFilePath, 'utf-8'));
+            
+            // Find the current patient record
+            const patientIndex = patientsData.findIndex(p => p.DocumentID === this.patientRecord.DocumentID);
+            
+            if (patientIndex !== -1) {
+                // Update call information
+                patientsData[patientIndex].followUpCall.callInitiated = true;
+                patientsData[patientIndex].followUpCall.callTimestamp = new Date().toISOString();
+                
+                if (adherenceData) {
+                    patientsData[patientIndex].followUpCall.adherenceAnswers = {
+                        ...patientsData[patientIndex].followUpCall.adherenceAnswers,
+                        ...adherenceData
+                    };
+                }
+                
+                if (appointmentData) {
+                    patientsData[patientIndex].followUpAppointment = {
+                        ...patientsData[patientIndex].followUpAppointment,
+                        ...appointmentData
+                    };
+                }
+                
+                // Mark call as completed if both adherence and appointment are done
+                if (adherenceData && appointmentData) {
+                    patientsData[patientIndex].followUpCall.callCompleted = true;
+                }
+                
+                // Save back to file
+                fs.writeFileSync(patientsFilePath, JSON.stringify(patientsData, null, 2));
+                console.log(`[Bot] Updated patient data for ${this.patientRecord.patientName}`);
+            }
+        } catch (error) {
+            console.error('[Bot] Error saving patient call data:', error.message);
+        }
     }
 }
 

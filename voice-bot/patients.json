@@ -1,0 +1,317 @@
+[
+  {
+    "DocumentID": "cnUXoR0KqTI0cv31SYo",
+    "dischargeDate": "2025-07-13T11:00:00Z",
+    "doctorName": "Patel",
+    "followUpAppointment": {
+      "scheduled": false,
+      "appointmentDateTime": null,
+      "confirmationSent": false
+    },
+    "followUpCall": {
+      "callInitiated": false,
+      "callCompleted": false,
+      "callTimestamp": null,
+      "adherenceAnswers": {
+        "filledPrescription": null,
+        "missedDoses": null,
+        "sideEffects": null
+      },
+      "callTranscriptUrl": null
+    },
+    "followUpWindowWeeks": 3,
+    "patientName": "Anjali Mehta",
+    "phoneNumber": "+919988776655",
+    "prescriptions": [
+      {
+        "medicationName": "Levothyroxine",
+        "dosage": "50mcg",
+        "frequency": "Once daily"
+      }
+    ]
+  },
+  {
+    "DocumentID": "aF8GxS2LpW91bz7kM3N",
+    "dischargeDate": "2025-07-16T09:30:00Z",
+    "doctorName": "Gupta",
+    "followUpAppointment": {
+      "scheduled": false,
+      "appointmentDateTime": null,
+      "confirmationSent": false
+    },
+    "followUpCall": {
+      "callInitiated": false,
+      "callCompleted": false,
+      "callTimestamp": null,
+      "adherenceAnswers": {
+        "filledPrescription": null,
+        "missedDoses": null,
+        "sideEffects": null
+      },
+      "callTranscriptUrl": null
+    },
+    "followUpWindowWeeks": 2,
+    "patientName": "Vikram Singh",
+    "phoneNumber": "+919876543210",
+    "prescriptions": [
+      {
+        "medicationName": "Amlodipine",
+        "dosage": "5mg",
+        "frequency": "Once daily"
+      },
+      {
+        "medicationName": "Atorvastatin",
+        "dosage": "20mg",
+        "frequency": "Once daily at night"
+      }
+    ]
+  },
+  {
+    "DocumentID": "zJ4oCv5BnY7tP1wE9qR",
+    "dischargeDate": "2025-07-10T15:00:00Z",
+    "doctorName": "Sharma",
+    "followUpAppointment": {
+      "scheduled": false,
+      "appointmentDateTime": null,
+      "confirmationSent": false
+    },
+    "followUpCall": {
+      "callInitiated": false,
+      "callCompleted": false,
+      "callTimestamp": null,
+      "adherenceAnswers": {
+        "filledPrescription": null,
+        "missedDoses": null,
+        "sideEffects": null
+      },
+      "callTranscriptUrl": null
+    },
+    "followUpWindowWeeks": 4,
+    "patientName": "Priya Kapoor",
+    "phoneNumber": "+919911223344",
+    "prescriptions": [
+      {
+        "medicationName": "Metformin",
+        "dosage": "500mg",
+        "frequency": "Twice daily with meals"
+      }
+    ]
+  },
+  {
+    "DocumentID": "mK9pL3xWqR5zC8vA2sD",
+    "dischargeDate": "2025-07-17T12:45:00Z",
+    "doctorName": "Verma",
+    "followUpAppointment": {
+      "scheduled": false,
+      "appointmentDateTime": null,
+      "confirmationSent": false
+    },
+    "followUpCall": {
+      "callInitiated": false,
+      "callCompleted": false,
+      "callTimestamp": null,
+      "adherenceAnswers": {
+        "filledPrescription": null,
+        "missedDoses": null,
+        "sideEffects": null
+      },
+      "callTranscriptUrl": null
+    },
+    "followUpWindowWeeks": 1,
+    "patientName": "Rohan Joshi",
+    "phoneNumber": "+918877665544",
+    "prescriptions": [
+      {
+        "medicationName": "Amoxicillin",
+        "dosage": "500mg",
+        "frequency": "Three times a day"
+      }
+    ]
+  },
+  {
+    "DocumentID": "bN2hY6tGfD1kP9sV4wC",
+    "dischargeDate": "2025-07-14T18:00:00Z",
+    "doctorName": "Patel",
+    "followUpAppointment": {
+      "scheduled": false,
+      "appointmentDateTime": null,
+      "confirmationSent": false
+    },
+    "followUpCall": {
+      "callInitiated": false,
+      "callCompleted": false,
+      "callTimestamp": null,
+      "adherenceAnswers": {
+        "filledPrescription": null,
+        "missedDoses": null,
+        "sideEffects": null
+      },
+      "callTranscriptUrl": null
+    },
+    "followUpWindowWeeks": 2,
+    "patientName": "Sneha Reddy",
+    "phoneNumber": "+917766554433",
+    "prescriptions": [
+      {
+        "medicationName": "Ibuprofen",
+        "dosage": "400mg",
+        "frequency": "As needed for pain, max 3 times a day"
+      }
+    ]
+  },
+  {
+    "DocumentID": "qW7eR4tYpU1iO2aS3dF",
+    "dischargeDate": "2025-07-15T10:00:00Z",
+    "doctorName": "Gupta",
+    "followUpAppointment": {
+      "scheduled": true,
+      "appointmentDateTime": "2025-07-29T14:00:00Z",
+      "confirmationSent": true
+    },
+    "followUpCall": {
+      "callInitiated": false,
+      "callCompleted": false,
+      "callTimestamp": null,
+      "adherenceAnswers": {
+        "filledPrescription": null,
+        "missedDoses": null,
+        "sideEffects": null
+      },
+      "callTranscriptUrl": null
+    },
+    "followUpWindowWeeks": 2,
+    "patientName": "Arjun Desai",
+    "phoneNumber": "+918899001122",
+    "prescriptions": [
+      {
+        "medicationName": "Lisinopril",
+        "dosage": "10mg",
+        "frequency": "Once daily"
+      }
+    ]
+  },
+  {
+    "DocumentID": "gH5jK8lPzX1cV4bN6mQ",
+    "dischargeDate": "2025-07-12T20:00:00Z",
+    "doctorName": "Sharma",
+    "followUpAppointment": {
+      "scheduled": false,
+      "appointmentDateTime": null,
+      "confirmationSent": false
+    },
+    "followUpCall": {
+      "callInitiated": false,
+      "callCompleted": false,
+      "callTimestamp": null,
+      "adherenceAnswers": {
+        "filledPrescription": null,
+        "missedDoses": null,
+        "sideEffects": null
+      },
+      "callTranscriptUrl": null
+    },
+    "followUpWindowWeeks": 3,
+    "patientName": "Isha Nair",
+    "phoneNumber": "+919123456789",
+    "prescriptions": [
+      {
+        "medicationName": "Pantoprazole",
+        "dosage": "40mg",
+        "frequency": "Once daily before breakfast"
+      }
+    ]
+  },
+  {
+    "DocumentID": "vB3nC6xZqW9eR2tYpU1",
+    "dischargeDate": "2025-07-17T14:00:00Z",
+    "doctorName": "Verma",
+    "followUpAppointment": {
+      "scheduled": false,
+      "appointmentDateTime": null,
+      "confirmationSent": false
+    },
+    "followUpCall": {
+      "callInitiated": false,
+      "callCompleted": false,
+      "callTimestamp": null,
+      "adherenceAnswers": {
+        "filledPrescription": null,
+        "missedDoses": null,
+        "sideEffects": null
+      },
+      "callTranscriptUrl": null
+    },
+    "followUpWindowWeeks": 1,
+    "patientName": "Aditya Rao",
+    "phoneNumber": "+919555666777",
+    "prescriptions": [
+      {
+        "medicationName": "Warfarin",
+        "dosage": "5mg",
+        "frequency": "Once daily as directed"
+      }
+    ]
+  },
+  {
+    "DocumentID": "iO2aS3dFjK8lPzX1cV4",
+    "dischargeDate": "2025-07-11T13:20:00Z",
+    "doctorName": "Patel",
+    "followUpAppointment": {
+      "scheduled": false,
+      "appointmentDateTime": null,
+      "confirmationSent": false
+    },
+    "followUpCall": {
+      "callInitiated": false,
+      "callCompleted": false,
+      "callTimestamp": null,
+      "adherenceAnswers": {
+        "filledPrescription": null,
+        "missedDoses": null,
+        "sideEffects": null
+      },
+      "callTranscriptUrl": null
+    },
+    "followUpWindowWeeks": 4,
+    "patientName": "Diya Kumar",
+    "phoneNumber": "+918765432109",
+    "prescriptions": [
+      {
+        "medicationName": "Sertraline",
+        "dosage": "50mg",
+        "frequency": "Once daily"
+      }
+    ]
+  },
+  {
+    "DocumentID": "gHjK8lPzX1cV4bN6mQk",
+    "dischargeDate": "2025-07-16T19:00:00Z",
+    "doctorName": "Gupta",
+    "followUpAppointment": {
+      "scheduled": false,
+      "appointmentDateTime": null,
+      "confirmationSent": false
+    },
+    "followUpCall": {
+      "callInitiated": false,
+      "callCompleted": false,
+      "callTimestamp": null,
+      "adherenceAnswers": {
+        "filledPrescription": null,
+        "missedDoses": null,
+        "sideEffects": null
+      },
+      "callTranscriptUrl": null
+    },
+    "followUpWindowWeeks": 1,
+    "patientName": "Kabir Shah",
+    "phoneNumber": "+919000111222",
+    "prescriptions": [
+      {
+        "medicationName": "Furosemide",
+        "dosage": "20mg",
+        "frequency": "Once daily in the morning"
+      }
+    ]
+  }
+]

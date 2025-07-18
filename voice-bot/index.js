@@ -1,5 +1,5 @@
 // Healthcare Voice Agent - Express Server
-// Implements Bot Framework integration with voice capabilities
+// Implements Bot Framework integration with voice capabilities and patient data
 
 const path = require('path');
 const dotenv = require('dotenv');
@@ -13,6 +13,10 @@ const {
 } = require('botbuilder');
 
 const { EchoBot } = require('./bot');
+const { PatientBotFactory } = require('./patientBotFactory');
+
+// Initialize patient bot factory
+const patientFactory = new PatientBotFactory();
 
 // Create HTTP server with voice chat routing
 const app = express();
@@ -37,6 +41,42 @@ app.get('/', (req, res) => {
 // WebChat interface
 app.get('/webchat', (req, res) => {
     res.sendFile(path.join(__dirname, 'index.html'));
+});
+
+// Patient management API endpoints
+app.get('/api/patients', (req, res) => {
+    try {
+        const stats = patientFactory.getPatientStats();
+        const patientsNeeding = patientFactory.getPatientsNeedingCalls();
+        
+        res.json({
+            stats,
+            patientsNeedingCalls: patientsNeeding.map(p => ({
+                documentId: p.DocumentID,
+                name: p.patientName,
+                doctor: p.doctorName,
+                dischargeDate: p.dischargeDate,
+                medication: p.prescriptions[0]?.medicationName || 'N/A'
+            }))
+        });
+    } catch (error) {
+        console.error('[API] Error fetching patients:', error);
+        res.status(500).json({ error: 'Failed to fetch patient data' });
+    }
+});
+
+app.get('/api/patients/:documentId', (req, res) => {
+    try {
+        const patient = patientFactory.getPatientById(req.params.documentId);
+        if (!patient) {
+            return res.status(404).json({ error: 'Patient not found' });
+        }
+        
+        res.json(patient);
+    } catch (error) {
+        console.error('[API] Error fetching patient:', error);
+        res.status(500).json({ error: 'Failed to fetch patient data' });
+    }
 });
 
 // Port configuration
@@ -131,7 +171,24 @@ const onTurnErrorHandler = async (context, error) => {
 
 adapter.onTurnError = onTurnErrorHandler;
 
-const myBot = new EchoBot();
+// --- PATIENT DATA INTEGRATION ---
+// For demo purposes, we'll create a bot instance for the first patient
+// In production, you would create different bot instances for each patient call
+
+console.log('\n=== Patient Bot Factory Initialization ===');
+const patientStats = patientFactory.getPatientStats();
+console.log('Patient Statistics:', patientStats);
+
+// Select a patient for the demo (you can specify a name or get the next one)
+const demoPatient = patientFactory.selectPatientForDemo(); // or pass a name: .selectPatientForDemo('Anjali')
+const myBot = patientFactory.createBotForPatient(demoPatient);
+
+console.log(`\n=== Bot Created for Patient ===`);
+console.log(`Patient: ${demoPatient.patientName}`);
+console.log(`Doctor: Dr. ${demoPatient.doctorName}`);
+console.log(`Medication: ${demoPatient.prescriptions[0].medicationName} ${demoPatient.prescriptions[0].dosage}`);
+console.log(`Discharge Date: ${new Date(demoPatient.dischargeDate).toLocaleDateString()}`);
+console.log('=====================================\n');
 
 // Main Bot Framework message endpoint
 app.post('/api/messages', async (req, res) => {
