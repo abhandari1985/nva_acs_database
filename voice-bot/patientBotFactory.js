@@ -23,8 +23,8 @@ class PatientBotFactory {
 
     // Get all patients who need follow-up calls
     getPatientsNeedingCalls() {
-        return this.patientsData.filter(patient => 
-            !patient.followUpCall.callCompleted && 
+        return this.patientsData.filter(patient =>
+            !patient.followUpCall.callCompleted &&
             !patient.followUpCall.callInitiated
         );
     }
@@ -39,7 +39,7 @@ class PatientBotFactory {
         if (!patientRecord) {
             throw new Error('Patient record is required');
         }
-        
+
         console.log(`[Factory] Creating bot for patient: ${patientRecord.patientName} (${patientRecord.DocumentID})`);
         return new EchoBot(patientRecord);
     }
@@ -51,15 +51,16 @@ class PatientBotFactory {
             console.log('[Factory] No patients currently need follow-up calls');
             return null;
         }
-        
-        // Return the first patient who needs a call
-        return patientsNeeding[0];
+
+        // Return a random patient who needs a call
+        const randomIndex = Math.floor(Math.random() * patientsNeeding.length);
+        return patientsNeeding[randomIndex];
     }
 
     // Simulate selecting a patient for calling (for demo/testing)
     selectPatientForDemo(patientName = null) {
         if (patientName) {
-            const patient = this.patientsData.find(p => 
+            const patient = this.patientsData.find(p =>
                 p.patientName.toLowerCase().includes(patientName.toLowerCase())
             );
             if (patient) {
@@ -67,10 +68,11 @@ class PatientBotFactory {
                 return patient;
             }
         }
-        
-        // Default to first patient for demo
-        const demoPatient = this.patientsData[0];
-        console.log(`[Factory] Using demo patient: ${demoPatient.patientName}`);
+
+        // Default to random patient for demo
+        const randomIndex = Math.floor(Math.random() * this.patientsData.length);
+        const demoPatient = this.patientsData[randomIndex];
+        console.log(`[Factory] Using random demo patient: ${demoPatient.patientName}`);
         return demoPatient;
     }
 
@@ -80,7 +82,7 @@ class PatientBotFactory {
         const callsCompleted = this.patientsData.filter(p => p.followUpCall.callCompleted).length;
         const callsInitiated = this.patientsData.filter(p => p.followUpCall.callInitiated && !p.followUpCall.callCompleted).length;
         const callsPending = this.patientsData.filter(p => !p.followUpCall.callInitiated).length;
-        
+
         return {
             total,
             callsCompleted,
@@ -98,11 +100,11 @@ module.exports = { PatientBotFactory };
 /*
 if (require.main === module) {
     const factory = new PatientBotFactory();
-    
+
     // Show statistics
     console.log('\n=== Patient Statistics ===');
     console.log(factory.getPatientStats());
-    
+
     // Get next patient for call
     const patientForCall = factory.getNextPatientForCall();
     if (patientForCall) {
@@ -110,7 +112,7 @@ if (require.main === module) {
         console.log(`Name: ${patientForCall.patientName}`);
         console.log(`Doctor: Dr. ${patientForCall.doctorName}`);
         console.log(`Medication: ${patientForCall.prescriptions[0].medicationName} ${patientForCall.prescriptions[0].dosage}`);
-        
+
         // Create bot for this patient
         const bot = factory.createBotForPatient(patientForCall);
         console.log(`Bot created successfully for ${patientForCall.patientName}`);

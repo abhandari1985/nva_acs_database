@@ -4,38 +4,38 @@
     <title>Healthcare Voice Agent - Local</title>
     <script src="https://cdn.botframework.com/botframework-webchat/latest/webchat.js"></script>
     <style>
-        html, body { 
-            height: 100%; 
-            margin: 0; 
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+        html, body {
+            height: 100%;
+            margin: 0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
         }
         #webchat { height: 100%; width: 100%; }
-        #startContainer { 
-            display: flex; 
-            justify-content: center; 
-            align-items: center; 
-            height: 100vh; 
+        #startContainer {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             flex-direction: column;
         }
-        #startButton { 
-            padding: 15px 30px; 
-            font-size: 18px; 
+        #startButton {
+            padding: 15px 30px;
+            font-size: 18px;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white; 
-            border: none; 
-            border-radius: 25px; 
-            cursor: pointer; 
+            color: white;
+            border: none;
+            border-radius: 25px;
+            cursor: pointer;
             box-shadow: 0 4px 15px rgba(0,0,0,0.3);
             transition: all 0.3s ease;
             font-weight: 600;
         }
-        #startButton:hover { 
+        #startButton:hover {
             transform: translateY(-2px);
             box-shadow: 0 6px 20px rgba(0,0,0,0.4);
         }
-        #startButton:active { 
+        #startButton:active {
             transform: translateY(0);
         }
         .info-text {
@@ -54,6 +54,72 @@
             margin-bottom: 15px;
             font-size: 24px;
             font-weight: 300;
+        }
+        .phone-section {
+            margin: 20px 0;
+            padding: 20px;
+            background: rgba(255,255,255,0.15);
+            border-radius: 15px;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.2);
+            min-width: 350px;
+        }
+        .phone-input {
+            width: 100%;
+            padding: 12px;
+            font-size: 16px;
+            border: 2px solid rgba(255,255,255,0.3);
+            border-radius: 8px;
+            margin-bottom: 15px;
+            box-sizing: border-box;
+            background: rgba(255,255,255,0.9);
+            color: #333;
+        }
+        .phone-input:focus {
+            border-color: #ffffff;
+            outline: none;
+            background: rgba(255,255,255,1);
+        }
+        .call-button {
+            width: 100%;
+            padding: 12px 20px;
+            font-size: 16px;
+            background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-weight: 600;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+        }
+        .call-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0,0,0,0.3);
+        }
+        .call-button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+        .status-message {
+            margin-top: 10px;
+            padding: 10px;
+            border-radius: 8px;
+            text-align: center;
+            font-size: 14px;
+            backdrop-filter: blur(10px);
+        }
+        .status-success {
+            background: rgba(40, 167, 69, 0.8);
+            color: white;
+            border: 1px solid rgba(40, 167, 69, 0.3);
+        }
+        .status-error {
+            background: rgba(220, 53, 69, 0.8);
+            color: white;
+            border: 1px solid rgba(220, 53, 69, 0.3);
         }
         .voice-status {
             margin-top: 10px;
@@ -157,26 +223,48 @@
     <div id="startContainer">
         <div class="info-text">
             <h2>Healthcare Voice Agent - Post-Discharge Follow-up</h2>
-            <p>You are about to receive a follow-up call from your healthcare team.</p>
-            <p>This is an automated call on behalf of Jenny, your post-discharge care coordinator.</p>
-            <p>Please ensure your microphone is enabled for the best experience.</p>
+            <p>Connect with Jenny, your post-discharge care coordinator</p>
+            <p>Choose your preferred method of communication below</p>
         </div>
+
+        <!-- Phone Call Section -->
+        <div class="phone-section">
+            <h3 style="margin-top: 0; color: white; font-weight: 400;">📞 Receive a Phone Call</h3>
+            <p style="margin-bottom: 15px; color: rgba(255,255,255,0.9); font-size: 14px;">
+                Enter your phone number to receive a call from Jenny
+            </p>
+            <input
+                type="tel"
+                id="phoneInput"
+                class="phone-input"
+                placeholder="e.g., +1234567890"
+                pattern="^\+[1-9]\d{1,14}$"
+                title="Please enter a valid phone number with country code (e.g., +1234567890)"
+            />
+            <button id="callButton" class="call-button">📞 Call Me Now</button>
+            <div id="statusMessage" class="status-message hidden"></div>
+        </div>
+
+        <div style="text-align: center; margin: 20px 0; color: rgba(255,255,255,0.8); font-weight: 500;">
+            <strong>OR</strong>
+        </div>
+
         <button id="startButton" onclick="startConversation()">Answer Call</button>
         <div class="voice-status" id="voiceStatus" style="display: none;">
             Voice recognition and synthesis ready
         </div>
     </div>
-    
+
     <div id="conversationContainer" class="hidden">
         <div class="messages-container" id="messagesContainer">
             <!-- Messages will be added here -->
         </div>
-        
+
         <div class="input-container">
             <input type="text" id="textInput" placeholder="Type your message..." />
             <button onclick="sendTextMessage()">Send</button>
         </div>
-        
+
         <div class="controls">
             <button id="micButton" class="control-btn" onclick="toggleMicrophone()">🎤 Start Listening</button>
             <button id="stopButton" class="control-btn" onclick="stopConversation()">Stop Conversation</button>
@@ -186,13 +274,64 @@
             </select>
             <button id="testVoiceButton" class="control-btn" onclick="testCurrentVoice()" title="Test selected voice">🎵 Test Voice</button>
         </div>
-        
+
         <div class="voice-status" id="conversationStatus">
             Ready to start conversation
         </div>
     </div>
 
     <script>
+        // Phone call functionality
+        function showStatusMessage(message, isError = false) {
+            const statusDiv = document.getElementById('statusMessage');
+            statusDiv.textContent = message;
+            statusDiv.className = isError ? 'status-message status-error' : 'status-message status-success';
+            statusDiv.classList.remove('hidden');
+
+            // Hide message after 5 seconds
+            setTimeout(() => {
+                statusDiv.classList.add('hidden');
+            }, 5000);
+        }
+
+        function validatePhoneNumber(phoneNumber) {
+            // Check if phone number matches international format (+country code + number)
+            const phoneRegex = /^\+[1-9]\d{1,14}$/;
+            return phoneRegex.test(phoneNumber);
+        }
+
+        async function makePhoneCall(phoneNumber) {
+            try {
+                // Encode the phone number for URL
+                const encodedNumber = encodeURIComponent(phoneNumber);
+                const apiUrl = `https://nurse-voice-agent-function.azurewebsites.net/api/make_phone_call?phoneNumber=${encodedNumber}`;
+
+                console.log('Making phone call to:', phoneNumber);
+                console.log('API URL:', apiUrl);
+
+                // Make the API call
+                const response = await fetch(apiUrl, {
+                    method: 'GET',
+                    headers: {
+                        'Accept': 'application/json',
+                    },
+                });
+
+                if (response.ok) {
+                    const result = await response.text();
+                    showStatusMessage(`Call initiated successfully! You should receive a call shortly at ${phoneNumber}`);
+                    console.log('Call API response:', result);
+                } else {
+                    const errorText = await response.text();
+                    showStatusMessage(`Failed to initiate call. Please try again. (${response.status})`, true);
+                    console.error('Call API error:', response.status, errorText);
+                }
+            } catch (error) {
+                showStatusMessage('Network error. Please check your connection and try again.', true);
+                console.error('Network error:', error);
+            }
+        }
+
         let directLine;
         let recognition;
         let synthesis = window.speechSynthesis;
@@ -205,7 +344,7 @@
         function initializeVoice() {
             const voices = synthesis.getVoices();
             console.log('Available voices:', voices.map(v => v.name).join(', '));
-            
+
             // Prioritize high-quality female voices for healthcare conversations
             // Look for Microsoft Edge voices first (highest quality)
             selectedVoice = voices.find(voice => voice.name.includes('Microsoft Aria Online')) ||
@@ -224,7 +363,7 @@
                           // Final fallback to any English voice
                           voices.find(voice => voice.lang.startsWith('en-US')) ||
                           voices.find(voice => voice.lang.startsWith('en'));
-            
+
             console.log('Selected voice:', selectedVoice?.name || 'Default');
             console.log('Voice details:', {
                 name: selectedVoice?.name,
@@ -232,7 +371,7 @@
                 gender: selectedVoice?.gender,
                 localService: selectedVoice?.localService
             });
-            
+
             // Populate voice selector with female voices
             populateVoiceSelector(voices);
         }
@@ -241,12 +380,12 @@
         function populateVoiceSelector(voices) {
             const voiceSelector = document.getElementById('voiceSelector');
             if (!voiceSelector) return;
-            
+
             // Clear existing options except the first one
             voiceSelector.innerHTML = '<option value="">Select Voice</option>';
-            
+
             // Filter for female voices and English language
-            const femaleVoices = voices.filter(voice => 
+            const femaleVoices = voices.filter(voice =>
                 voice.lang.startsWith('en') && (
                     voice.name.toLowerCase().includes('female') ||
                     voice.name.includes('Aria') ||
@@ -258,7 +397,7 @@
                     voice.gender === 'female'
                 )
             );
-            
+
             // Add female voices to selector
             femaleVoices.forEach(voice => {
                 const option = document.createElement('option');
@@ -275,12 +414,12 @@
         function changeVoice() {
             const voiceSelector = document.getElementById('voiceSelector');
             const selectedVoiceName = voiceSelector.value;
-            
+
             if (selectedVoiceName) {
                 const voices = synthesis.getVoices();
                 selectedVoice = voices.find(voice => voice.name === selectedVoiceName);
                 console.log('Voice changed to:', selectedVoice?.name);
-                
+
                 // Test the new voice automatically
                 if (selectedVoice) {
                     speakText('Hello, this is Jenny. I will be using this voice for our conversation.');
@@ -364,11 +503,11 @@
             const messagesContainer = document.getElementById('messagesContainer');
             const messageDiv = document.createElement('div');
             messageDiv.className = `message ${isUser ? 'user' : 'bot'}`;
-            
+
             // Clean text for display (remove SSML tags)
             const cleanText = text.replace(/<[^>]*>/g, '').trim();
             messageDiv.textContent = cleanText;
-            
+
             messagesContainer.appendChild(messageDiv);
             messagesContainer.scrollTop = messagesContainer.scrollHeight;
         }
@@ -376,55 +515,55 @@
         // Speak text using enhanced voice synthesis
         function speakText(text) {
             if (isMuted) return;
-            
+
             // Cancel any ongoing speech
             synthesis.cancel();
-            
+
             // Clean text for speech synthesis (remove SSML tags)
             const cleanText = text.replace(/<[^>]*>/g, '').trim();
-            
+
             const utterance = new SpeechSynthesisUtterance(cleanText);
-            
+
             if (selectedVoice) {
                 utterance.voice = selectedVoice;
                 console.log('Using voice:', selectedVoice.name);
             }
-            
+
             // Enhanced voice settings optimized for female healthcare professional
             utterance.rate = 0.85; // Slightly slower for healthcare clarity
             utterance.pitch = 1.1;  // Slightly higher pitch for female voice
             utterance.volume = 0.85; // Clear but not overwhelming
-            
+
             // Add some pauses for natural speech (simple implementation)
             const naturalText = cleanText
                 .replace(/\. /g, '. ')  // Ensure space after periods
                 .replace(/\? /g, '? ')  // Ensure space after questions
                 .replace(/\! /g, '! '); // Ensure space after exclamations
-            
+
             utterance.text = naturalText;
-            
+
             utterance.onstart = function() {
                 console.log('Speech synthesis started with voice:', selectedVoice?.name);
                 updateStatus('Speaking...');
             };
-            
+
             utterance.onend = function() {
                 console.log('Speech synthesis ended');
                 updateStatus('Ready to listen');
             };
-            
+
             utterance.onerror = function(event) {
                 console.error('Speech synthesis error:', event.error);
                 updateStatus('Speech error: ' + event.error);
             };
-            
+
             synthesis.speak(utterance);
         }
 
         // Send message to bot
         function sendMessage(text) {
             addMessage(text, true);
-            
+
             // Send message to our bot server
             fetch('/api/messages', {
                 method: 'POST',
@@ -515,12 +654,12 @@
                 recognition.stop();
             }
             synthesis.cancel();
-            
+
             // Reset to start screen
             document.getElementById('startContainer').classList.remove('hidden');
             document.getElementById('conversationContainer').classList.add('hidden');
             conversationStarted = false;
-            
+
             // Clear messages
             const messagesContainer = document.getElementById('messagesContainer');
             messagesContainer.innerHTML = '';
@@ -530,34 +669,34 @@
         async function startConversation() {
             try {
                 console.log('Starting conversation...');
-                
+
                 // Initialize voice synthesis
                 initializeVoice();
-                
+
                 // Initialize speech recognition
                 if (!initializeSpeechRecognition()) {
                     alert('Speech recognition is not supported in this browser. Please use Chrome or Edge.');
                     return;
                 }
-                
+
                 // Show conversation interface
                 document.getElementById('startContainer').classList.add('hidden');
                 document.getElementById('conversationContainer').classList.remove('hidden');
-                
+
                 // Set up event listeners
                 document.getElementById('textInput').addEventListener('keypress', function(e) {
                     if (e.key === 'Enter') {
                         sendTextMessage();
                     }
                 });
-                
+
                 console.log('Event listeners added');
-                
+
                 // Mark conversation as started - bot will speak first
                 if (!conversationStarted) {
                     conversationStarted = true;
                     console.log('Conversation started - bot will initiate with welcome message...');
-                    
+
                     // Send initial trigger to get bot's welcome message
                     setTimeout(() => {
                         fetch('/api/messages', {
@@ -599,12 +738,51 @@
             if (synthesis.onvoiceschanged !== undefined) {
                 synthesis.onvoiceschanged = initializeVoice;
             }
-            
+
             // Initialize voice immediately if voices are already loaded
             if (synthesis.getVoices().length > 0) {
                 initializeVoice();
             }
-            
+
+            // Phone call button event listener
+            document.getElementById('callButton').addEventListener('click', async () => {
+                const phoneInput = document.getElementById('phoneInput');
+                const callButton = document.getElementById('callButton');
+                const phoneNumber = phoneInput.value.trim();
+
+                // Validate phone number
+                if (!phoneNumber) {
+                    showStatusMessage('Please enter a phone number.', true);
+                    phoneInput.focus();
+                    return;
+                }
+
+                if (!validatePhoneNumber(phoneNumber)) {
+                    showStatusMessage('Please enter a valid phone number with country code (e.g., +1234567890).', true);
+                    phoneInput.focus();
+                    return;
+                }
+
+                // Disable button during API call
+                callButton.disabled = true;
+                callButton.textContent = '📞 Calling...';
+
+                try {
+                    await makePhoneCall(phoneNumber);
+                } finally {
+                    // Re-enable button
+                    callButton.disabled = false;
+                    callButton.textContent = '📞 Call Me Now';
+                }
+            });
+
+            // Allow Enter key to trigger call
+            document.getElementById('phoneInput').addEventListener('keypress', (event) => {
+                if (event.key === 'Enter') {
+                    document.getElementById('callButton').click();
+                }
+            });
+
             console.log('Page loaded and initialized');
         });
     </script>
