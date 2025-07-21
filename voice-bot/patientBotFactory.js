@@ -78,7 +78,7 @@ class PatientBotFactory {
         if (!patientRecord) {
             throw new Error('Patient record is required');
         }
-        
+
         console.log(`[Factory] Creating bot for patient: ${patientRecord.patientName} (${patientRecord.DocumentID})`);
         
         // Create enhanced bot with Cosmos DB integration
@@ -201,11 +201,11 @@ module.exports = { PatientBotFactory };
 /*
 if (require.main === module) {
     const factory = new PatientBotFactory();
-    
+
     // Show statistics
     console.log('\n=== Patient Statistics ===');
     console.log(factory.getPatientStats());
-    
+
     // Get next patient for call
     const patientForCall = factory.getNextPatientForCall();
     if (patientForCall) {
@@ -213,7 +213,7 @@ if (require.main === module) {
         console.log(`Name: ${patientForCall.patientName}`);
         console.log(`Doctor: Dr. ${patientForCall.doctorName}`);
         console.log(`Medication: ${patientForCall.prescriptions[0].medicationName} ${patientForCall.prescriptions[0].dosage}`);
-        
+
         // Create bot for this patient
         const bot = factory.createBotForPatient(patientForCall);
         console.log(`Bot created successfully for ${patientForCall.patientName}`);

@@ -32,7 +32,7 @@ const AZURE_OPENAI_CONFIG = {
 // =========================================================================================
 // IMPROVEMENT 1: The emergency response is now a concluding instruction, not a handoff offer.
 // =========================================================================================
-const EMERGENCY_SAFETY_RESPONSE = "If you are experiencing severe symptoms like dizziness, difficulty breathing, or significant pain, please hang up and dial 911 or contact your local emergency services immediately. I am logging this conversation as a high-priority alert for the nursing care team to review.";
+const EMERGENCY_SAFETY_RESPONSE = "Thanks for letting me know. That could be important. If you're experiencing anything like chest pain, trouble breathing, or feeling very unwell, please call your doctor or 911 right away.";
 
 const SHARED_INSTRUCTIONS = `
 ### SHARED BEHAVIOR AND RULES ###
@@ -41,7 +41,7 @@ const SHARED_INSTRUCTIONS = `
 - Your role is to handle medication adherence checks and schedule follow-up appointments. You cannot connect to a live doctor or nurse.
 - You are speaking with {Patient_Name}, who was recently discharged and prescribed {treatment_name}.
 - Maintain a warm, respectful, and calming tone as you would in a professional healthcare call.
-- CRITICAL SAFETY PROTOCOL: If the user mentions severe side effects (e.g., "dizzy," "chest pain," "can't breathe"), you must immediately stop your current task and provide the exact scripted safety response: "${EMERGENCY_SAFETY_RESPONSE}" Then continue to ask about scheduling their follow-up appointment.
+- CRITICAL SAFETY PROTOCOL: If the user mentions severe side effects (e.g., "dizzy," "chest pain," "can't breathe"), you must immediately stop your current task and provide the exact scripted safety response: "${EMERGENCY_SAFETY_RESPONSE}" continue the conversation without sounding dismissive. "I'm really glad you’ve been taking your medication as prescribed. Let’s also make sure you're scheduled for your follow-up appointment."
 - CRITICAL HANDOFF PROTOCOL: If the conversation history shows a switch from another specialist, you MUST briefly acknowledge the previous topic before proceeding.
 - CRITICAL CONFIRMATION RULE: Always confirm critical information like medication names and appointment times by reading them back to the user.
 - Remember: You initiated this call to check on the patient's well-being and medication compliance.
@@ -61,19 +61,26 @@ Your goal is to be supportive and identify any issues for the nursing team to re
 **Conversation Awareness:**
 - Read the conversation history. If the patient has already confirmed they have their medication, DO NOT ask if they have picked it up. Skip directly to the dosage check.
 
+**TONE AND PROFESSIONALISM:**
+- Speak warmly and respectfully, like a supportive medical assistant.
+- Use brief, conversational language — avoid sounding scripted or robotic.
+- Be reassuring and calm, especially when discussing symptoms or care instructions.
+- Use simple phrasing and contractions (e.g., “you’ve,” “let’s,” “I’m glad”) to sound more natural.
+- Maintain a lightly casual tone, like you're here to help — not to interrogate.
+
 **COMPLETION DETECTION:**
 - If the patient indicates they have NO PROBLEMS, NO ISSUES, NO SIDE EFFECTS, or that everything is FINE/GOOD/WELL with their medication, immediately transition to scheduling
 - Look for phrases like: "no problems", "no issues", "fine", "good", "well", "no side effects", "everything is good"
-- When transitioning, say: "Perfect! It sounds like you're managing your medication well. The last thing is to schedule your follow-up appointment with Dr. {Doctor_Name}. Are you available to do that now?"
+- When transitioning, say: "Great! Sounds like you're on track with your meds. Can we go ahead and schedule your follow-up with Dr. {Doctor_Name} now?"
 
 **Conversation Structure (Only if issues need to be explored):**
-1.  **Initial Check:** If not already discussed, ask: "Have you had a chance to pick up your {treatment_name} prescription yet?"
+1.  **Initial Check:** If not already discussed, ask: "Have you picked up your {treatment_name} prescription yet?"
 2.  **Dosage/Timing Check:** Verify how they are taking the medication. Be specific about the prescribed dosage.
-    - Example: "I'm glad to hear you have it. The instructions are for {medication_details}. How have you been managing with that schedule?"
-3.  **Quick Issue Check:** Ask directly: "Are you experiencing any side effects or problems with your {treatment_name}?"
+    - Example: "The instructions are for {medication_details}. How’s that schedule going for you?"
+3.  **Quick Issue Check:** Ask directly: "Any side effects or problems with your {treatment_name}?"
 4.  **If NO ISSUES:** Immediately transition to scheduling using the completion phrase above
-5.  **If ISSUES MENTIONED:** 
-    - **Severe Side Effects:** Use the EMERGENCY_SAFETY_RESPONSE, then immediately ask: "Now, would you like me to help you schedule your follow-up appointment with Dr. {Doctor_Name}?"
+5.  **If ISSUES MENTIONED:**
+    - **Severe Side Effects:** Use the EMERGENCY_SAFETY_RESPONSE, then immediately ask: "Would you like help scheduling your follow-up with Dr. {Doctor_Name}?"
     - **Non-Urgent Issues:** Acknowledge and inform the patient you will document the issue for Dr. {Doctor_Name}'s team.
 6.  **End of Adherence Flow:** Once any issues are addressed, transition to scheduling: "The last thing is to schedule your follow-up appointment with Dr. {Doctor_Name}. Are you available to do that now?"
 
@@ -111,7 +118,7 @@ You help ${patientRecord.patientName} book, reschedule, or cancel follow-up appo
 - Patient was discharged recently and needs a follow-up appointment
 
 **Business Hours (Clinic Time Zone):**
-- Available slots: 9:00 AM, 10:00 AM, 10:30 AM, 11:00 AM, 2:00 PM, 3:00 PM, 4:00 PM, 5:00 PM
+- Available slots: 9:00 AM, 11:00 AM, 2:00 PM
 
 **Your Tool-Use Protocol:**
 Use the scheduling tools to help ${patientRecord.patientName} book their follow-up appointment with Dr. ${patientRecord.doctorName}.
@@ -149,19 +156,19 @@ Respond with ONLY the routing command. Do not add any other text.`;
 class EchoBot extends ActivityHandler {
     constructor(patientRecord) { // Accept the patient record
         super();
-        
+
         if (!patientRecord) {
             throw new Error("A valid patient record must be provided.");
         }
 
         this.patientRecord = patientRecord; // Store the patient's data
-        
+
         this.activeAgent = 'triage';
         this.conversationHistory = [];
         this.schedulingPlugin = new SchedulingPlugin(this.patientRecord.patientName); // Pass patient name to plugin
         this.conversationId = null;
         this.hasSeenUser = new Set();
-        
+
         // Add conversation state tracking
         this.conversationState = {
             medicationPickedUp: false,
@@ -170,42 +177,42 @@ class EchoBot extends ActivityHandler {
             schedulingStarted: false,
             schedulingCompleted: false
         };
-        
+
         console.log(`[Bot] Initialized for patient: ${this.patientRecord.patientName} (${this.patientRecord.DocumentID})`);
 
         this.onMessage(async (context, next) => {
             const userText = context.activity.text;
             this.conversationId = context.activity.conversation.id;
-            
+
             if (!this.hasSeenUser.has(this.conversationId)) {
                 this.hasSeenUser.add(this.conversationId);
-                
+
                 // Create a personalized welcome message
                 const welcomeMessage = `Hello ${this.patientRecord.patientName}! This is an AI assistant calling on behalf of Dr. ${this.patientRecord.doctorName}. I'm here to help with your medication follow-up for your recent discharge. How are you feeling today?`;
-                
+
                 const formattedWelcome = this.formatSpeechResponse(welcomeMessage, 'welcome');
                 await context.sendActivity(MessageFactory.text(welcomeMessage, formattedWelcome));
                 this.conversationHistory.push({ role: 'assistant', content: welcomeMessage });
                 await next();
                 return;
             }
-            
+
             if (!userText || userText.trim().length === 0) {
-                await context.sendActivity("I'm sorry, I didn't hear anything. Could you please repeat that?");
+                await context.sendActivity("Sorry, I didn’t catch that—could you say it again?");
                 await next();
                 return;
             }
 
             try {
-                // For Bot Framework calls, don't add to conversation history 
+                // For Bot Framework calls, don't add to conversation history
                 // as processMessage now handles it directly
                 const response = await this.processMessage(userText);
-                
+
                 // Enhanced voice formatting based on current agent context
                 const speechContext = this.getSpeechContextFromResponse(response);
                 const formattedResponse = this.formatSpeechResponse(response, speechContext);
                 await context.sendActivity(MessageFactory.text(response, formattedResponse));
-                
+
             } catch (error) {
                 console.error(`[Bot] Error processing message: ${error.message}`);
                 const errorResponse = this.getErrorResponse(error);
@@ -223,7 +230,7 @@ class EchoBot extends ActivityHandler {
     async processMessage(userText) {
         // Handle special start call trigger
         if (userText === '__START_CALL__') {
-            const welcomeMessage = `Hello ${this.patientRecord.patientName}! This is Jenny calling on behalf of Dr. ${this.patientRecord.doctorName} for your post-discharge follow-up. I hope you're doing well today. I wanted to check in about your medication - have you had a chance to pick up your ${this.patientRecord.prescriptions[0].medicationName} prescription yet?`;
+            const welcomeMessage = `Hello ${this.patientRecord.patientName}! this is Jenny calling for Dr. ${this.patientRecord.doctorName} with your follow-up. Hope you're well! Have you picked up your medication yet for ${this.patientRecord.prescriptions[0].medicationName}?`;
             this.conversationHistory.push({ role: 'assistant', content: welcomeMessage });
             return welcomeMessage; // Return clean text instead of SSML
         }
@@ -233,28 +240,28 @@ class EchoBot extends ActivityHandler {
 
         // Update conversation state based on user response
         this.updateConversationState(userText);
-        
+
         // Check conversation state to determine appropriate routing
         console.log(`[Bot] Current conversation state:`, this.conversationState);
-        
+
         const route = await this.callTriageAgent(userText);
         console.log(`[Bot] Triage decision: ${route}`);
 
         // Handle safety override with scheduling continuation
         if (route.includes('ROUTE_TO_SAFETY')) {
-            const response = EMERGENCY_SAFETY_RESPONSE + " Now, would you like me to help you schedule your follow-up appointment with Dr. " + this.patientRecord.doctorName + "?";
+            const response = EMERGENCY_SAFETY_RESPONSE + " Would you like to schedule your follow-up with Dr. " + this.patientRecord.doctorName + "?";
             this.conversationHistory.push({ role: 'assistant', content: response });
             // Mark adherence as completed so next interaction goes to scheduling
             this.conversationState.adherenceCompleted = true;
             return response;
         }
-        
+
         // Determine target agent based on conversation state and triage
         let targetAgent = null;
-        
+
         if (route.includes('ROUTE_TO_ADHERENCE') && !this.conversationState.adherenceCompleted) {
             targetAgent = 'adherence';
-        } else if (route.includes('ROUTE_TO_SCHEDULING') || 
+        } else if (route.includes('ROUTE_TO_SCHEDULING') ||
                   (this.conversationState.adherenceCompleted && !this.conversationState.schedulingCompleted)) {
             targetAgent = 'scheduling';
         } else if (!this.conversationState.adherenceCompleted) {
@@ -267,46 +274,46 @@ class EchoBot extends ActivityHandler {
                 console.log(`[Bot] Switching agent from ${this.activeAgent} to ${targetAgent}.`);
                 this.activeAgent = targetAgent;
             }
-            
+
             let response;
             if (this.activeAgent === 'adherence') {
                 response = await this.callAdherenceAgent(userText);
             } else if (this.activeAgent === 'scheduling') {
                 if (!this.conversationState.schedulingStarted) {
                     this.conversationState.schedulingStarted = true;
-                    response = "Great! Now let's schedule your follow-up appointment with Dr. " + this.patientRecord.doctorName + ". What days work best for you?";
+                    response = `Great! Let’s book your follow-up with Dr. ${this.patientRecord.doctorName}. What days work for you?`;
                 } else {
                     response = await this.handleSchedulingWithTools();
                 }
             }
-            
+
             this.conversationHistory.push({ role: 'assistant', content: response });
             return response;
         }
 
         // Enhanced fallback logic
         console.log('[Bot] Executing fallback logic.');
-        
+
         if (this.conversationState.adherenceCompleted && !this.conversationState.schedulingStarted) {
             this.conversationState.schedulingStarted = true;
             const response = "Perfect! Now let's schedule your follow-up appointment with Dr. " + this.patientRecord.doctorName + ". What days work best for you?";
             this.conversationHistory.push({ role: 'assistant', content: response });
             return response;
         }
-        
+
         const lastBotMessage = this.conversationHistory[this.conversationHistory.length - 2]?.content;
         if (lastBotMessage && lastBotMessage.includes("I want to make sure I understand")) {
             const response = "I understand you're trying to help. Let me ask directly - do you have any side effects from your medication, or would you like to schedule your follow-up appointment?";
             this.conversationHistory.push({ role: 'assistant', content: response });
             return response;
         }
-        
+
         // For first-time unclear responses, be more helpful
         const response = `I want to make sure I understand you correctly. I'm calling to check on your ${this.patientRecord.prescriptions[0].medicationName} prescription. Are you taking it as prescribed, or do you have any questions about your medication?`;
         this.conversationHistory.push({ role: 'assistant', content: response });
         return response;
     }
-    
+
     getErrorResponse(error) {
         if (error.message.includes('timeout')) {
             return "I'm having a little trouble connecting right now. Could you please say that again?";
@@ -320,7 +327,7 @@ class EchoBot extends ActivityHandler {
     async callTriageAgent(userText) {
         try {
             const lastBotMessage = this.conversationHistory[this.conversationHistory.length - 2]?.content || 'None';
-            
+
             // Create enhanced context for triage decision
             const conversationContext = `
 **Conversation State:**
@@ -337,7 +344,7 @@ class EchoBot extends ActivityHandler {
 2. If medication/adherence topics are still active, prefer ROUTE_TO_ADHERENCE
 3. Use standard routing rules for new topics
 `;
-            
+
             const response = await this.callOpenAI(TRIAGE_AGENT_PROMPT, [{ role: 'user', content: conversationContext }], false);
             return response.content;
         } catch (error) {
@@ -351,10 +358,10 @@ class EchoBot extends ActivityHandler {
             // Get the patient's primary medication
             const primaryMedication = this.patientRecord.prescriptions[0];
             const medicationDetails = `${primaryMedication.medicationName} ${primaryMedication.dosage}, taken ${primaryMedication.frequency}`;
-            
+
             // Create context-aware prompt based on conversation state
             let contextualPrompt = ADHERENCE_AGENT_PROMPT;
-            
+
             // Add conversation state context
             if (this.conversationState.medicationPickedUp && this.conversationState.dosageDiscussed) {
                 contextualPrompt += `\n\n**IMPORTANT CONVERSATION CONTEXT:**
@@ -369,7 +376,7 @@ class EchoBot extends ActivityHandler {
 - DO NOT ask about picking up medication again
 - Focus on dosage and timing questions`;
             }
-            
+
             // Check if user response indicates completion (no issues)
             const userResponse = userText.toLowerCase();
             // Non-severe side effect handling (headache, fever, etc.)
@@ -386,7 +393,7 @@ class EchoBot extends ActivityHandler {
                 console.log('[Bot] Adherence completed due to no problems indicated');
                 return `Perfect! It sounds like you're managing your medication well. The last thing is to schedule your follow-up appointment with Dr. ${this.patientRecord.doctorName}. Are you available to do that now?`;
             }
-            
+
             // Personalize the prompt with the patient's medication details
             const personalizedAdherencePrompt = contextualPrompt
                 .replace(/{treatment_name}/g, primaryMedication.medicationName)
@@ -398,14 +405,14 @@ class EchoBot extends ActivityHandler {
             if (!response || !response.content) {
                 throw new Error('Invalid response from adherence agent');
             }
-            
+
             // Check if adherence is completed based on response content
-            if (response.content.includes('schedule your follow-up appointment') || 
+            if (response.content.includes('schedule your follow-up appointment') ||
                 response.content.includes('The last thing is to schedule')) {
                 this.conversationState.adherenceCompleted = true;
                 console.log('[Bot] Adherence phase completed, ready to transition to scheduling');
             }
-            
+
             return response.content;
         } catch (error) {
             console.error('[Bot] Adherence agent error:', error.message);
@@ -434,35 +441,35 @@ class EchoBot extends ActivityHandler {
     // Update conversation state based on user input
     updateConversationState(userText) {
         const lowerText = userText.toLowerCase();
-        
+
         // Check for medication pickup confirmation
-        if ((lowerText.includes('pick') || lowerText.includes('got') || lowerText.includes('have')) && 
+        if ((lowerText.includes('pick') || lowerText.includes('got') || lowerText.includes('have')) &&
             (lowerText.includes('medication') || lowerText.includes('prescription'))) {
             this.conversationState.medicationPickedUp = true;
             console.log('[Bot] State updated: medication picked up');
         }
-        
+
         // Check for dosage/schedule confirmation
-        if ((lowerText.includes('once') || lowerText.includes('daily') || lowerText.includes('day') || 
-             lowerText.includes('regularly') || lowerText.includes('schedule') || lowerText.includes('morning') || 
-             lowerText.includes('evening') || lowerText.includes('taking')) && 
-            (lowerText.includes('taking') || lowerText.includes('yes') || lowerText.includes('am') || 
+        if ((lowerText.includes('once') || lowerText.includes('daily') || lowerText.includes('day') ||
+             lowerText.includes('regularly') || lowerText.includes('schedule') || lowerText.includes('morning') ||
+             lowerText.includes('evening') || lowerText.includes('taking')) &&
+            (lowerText.includes('taking') || lowerText.includes('yes') || lowerText.includes('am') ||
              lowerText.includes('every'))) {
             this.conversationState.dosageDiscussed = true;
             console.log('[Bot] State updated: dosage discussed');
         }
-        
+
         // Check for "no problems/issues" responses - these should complete adherence
-        if ((lowerText.includes('no') && 
+        if ((lowerText.includes('no') &&
              (lowerText.includes('problem') || lowerText.includes('issue') || lowerText.includes('side effect'))) ||
-            (lowerText.includes('fine') || lowerText.includes('good') || lowerText.includes('well') || 
+            (lowerText.includes('fine') || lowerText.includes('good') || lowerText.includes('well') ||
              lowerText.includes('everything is good') || lowerText.includes('managing well'))) {
             this.conversationState.adherenceCompleted = true;
             console.log('[Bot] State updated: adherence completed (no problems indicated)');
         }
-        
+
         // Check for scheduling-related responses
-        if (lowerText.includes('schedule') || lowerText.includes('appointment') || 
+        if (lowerText.includes('schedule') || lowerText.includes('appointment') ||
             lowerText.includes('book') || lowerText.includes('available')) {
             this.conversationState.schedulingStarted = true;
             console.log('[Bot] State updated: scheduling started');
@@ -497,7 +504,7 @@ class EchoBot extends ActivityHandler {
 
                 this.conversationHistory.push({ role: 'assistant', content: null, tool_calls: aiResponse.tool_calls });
                 this.conversationHistory.push({ role: 'tool', tool_call_id: toolCall.id, name: functionName, content: toolResult });
-                
+
                 // Final call to get a natural language response
                 const finalResponse = await this.callOpenAI(getSchedulingAgentPrompt(this.patientRecord), this.conversationHistory, true);
 
@@ -519,20 +526,20 @@ class EchoBot extends ActivityHandler {
                     }
                     throw new Error('No content in final AI response and tool result was an error.');
                 }
-                
+
                 return finalResponse.content;
 
             } else {
                 if (!aiResponse.content) throw new Error('No content in AI response');
                 return aiResponse.content;
             }
-            
+
         } catch (error) {
             console.error('[Bot] Scheduling error:', error.message);
             return "I apologize, I'm having trouble accessing the appointment calendar right now. Can we try again in a few moments?";
         }
     }
-    
+
     // callOpenAI and other helper functions remain the same as v2.1
     async callOpenAI(systemPrompt, history, includeTools = true) {
         const messages = [{ role: 'system', content: systemPrompt }, ...history];
@@ -578,7 +585,7 @@ class EchoBot extends ActivityHandler {
                 if (!response.data?.choices?.[0]?.message) {
                     throw new Error('Invalid response structure from Azure OpenAI');
                 }
-                
+
                 console.log(`[Bot] Azure OpenAI call successful (attempt ${attempt + 1})`);
                 return response.data.choices[0].message;
 
@@ -626,25 +633,25 @@ class EchoBot extends ActivityHandler {
         if (response.includes('dial 911') || response.includes('emergency services')) {
             return 'emergency';
         }
-        
+
         // Context based on current active agent
         if (this.activeAgent === 'adherence') {
             return 'adherence';
         } else if (this.activeAgent === 'scheduling') {
             return 'scheduling';
         }
-        
+
         // Content-based context detection
-        if (response.includes('medication') || response.includes('prescription') || 
+        if (response.includes('medication') || response.includes('prescription') ||
             response.includes('dosage') || response.includes('side effects')) {
             return 'adherence';
         }
-        
-        if (response.includes('appointment') || response.includes('schedule') || 
+
+        if (response.includes('appointment') || response.includes('schedule') ||
             response.includes('AM') || response.includes('PM')) {
             return 'scheduling';
         }
-        
+
         return 'normal';
     }
 
@@ -658,11 +665,11 @@ class EchoBot extends ActivityHandler {
                     </prosody>
                 </voice>
             </speak>`,
-            
+
             adherence: `<speak version="1.0" xml:lang="en-US">
                 <voice name="en-US-JennyNeural" style="empathetic">
                     <prosody rate="0.85" pitch="medium">
-                        ${text.replace(/(\d+)\s*(mg|milligrams?|mcg|micrograms?)/gi, 
+                        ${text.replace(/(\d+)\s*(mg|milligrams?|mcg|micrograms?)/gi,
                             '<emphasis level="moderate">$1 $2</emphasis>')
                             .replace(/(once|twice|three times|four times)\s+(daily|a day|per day)/gi,
                             '<emphasis level="moderate">$1 $2</emphasis>')
@@ -671,16 +678,16 @@ class EchoBot extends ActivityHandler {
                     </prosody>
                 </voice>
             </speak>`,
-            
+
             scheduling: `<speak version="1.0" xml:lang="en-US">
                 <voice name="en-US-JennyNeural" style="customerservice">
                     <prosody rate="0.9">
-                        ${text.replace(/(\d{1,2}:\d{2}\s*(AM|PM))/gi, 
+                        ${text.replace(/(\d{1,2}:\d{2}\s*(AM|PM))/gi,
                             '<emphasis level="strong">$1</emphasis>')}
                     </prosody>
                 </voice>
             </speak>`,
-            
+
             emergency: `<speak version="1.0" xml:lang="en-US">
                 <voice name="en-US-JennyNeural" style="urgent">
                     <prosody rate="1.0" pitch="high">
@@ -688,7 +695,7 @@ class EchoBot extends ActivityHandler {
                     </prosody>
                 </voice>
             </speak>`,
-            
+
             normal: `<speak version="1.0" xml:lang="en-US">
                 <voice name="en-US-JennyNeural" style="customerservice">
                     <prosody rate="0.9" pitch="medium">
@@ -697,7 +704,7 @@ class EchoBot extends ActivityHandler {
                 </voice>
             </speak>`
         };
-        
+
         return ssmlTemplates[context] || ssmlTemplates.normal;
     }
 
@@ -761,34 +768,34 @@ class EchoBot extends ActivityHandler {
         try {
             const patientsFilePath = path.join(__dirname, 'patients.json');
             const patientsData = JSON.parse(fs.readFileSync(patientsFilePath, 'utf-8'));
-            
+
             // Find the current patient record
             const patientIndex = patientsData.findIndex(p => p.DocumentID === this.patientRecord.DocumentID);
-            
+
             if (patientIndex !== -1) {
                 // Update call information
                 patientsData[patientIndex].followUpCall.callInitiated = true;
                 patientsData[patientIndex].followUpCall.callTimestamp = new Date().toISOString();
-                
+
                 if (adherenceData) {
                     patientsData[patientIndex].followUpCall.adherenceAnswers = {
                         ...patientsData[patientIndex].followUpCall.adherenceAnswers,
                         ...adherenceData
                     };
                 }
-                
+
                 if (appointmentData) {
                     patientsData[patientIndex].followUpAppointment = {
                         ...patientsData[patientIndex].followUpAppointment,
                         ...appointmentData
                     };
                 }
-                
+
                 // Mark call as completed if both adherence and appointment are done
                 if (adherenceData && appointmentData) {
                     patientsData[patientIndex].followUpCall.callCompleted = true;
                 }
-                
+
                 // Save back to file
                 fs.writeFileSync(patientsFilePath, JSON.stringify(patientsData, null, 2));
                 console.log(`[Bot] Updated local patient data file for ${this.patientRecord.patientName}`);
