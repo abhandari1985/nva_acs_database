@@ -701,8 +701,63 @@ class EchoBot extends ActivityHandler {
         return ssmlTemplates[context] || ssmlTemplates.normal;
     }
 
-    // Save patient call data and update the JSON file
+    // Save patient call data and update Cosmos DB
     async savePatientCallData(adherenceData = null, appointmentData = null) {
+        try {
+            if (this.cosmosDbService) {
+                console.log(`[Bot] Saving patient data to Cosmos DB for ${this.patientRecord.patientName}`);
+                
+                // Update follow-up call as initiated
+                await this.cosmosDbService.updateFollowUpCall(
+                    this.patientRecord.DocumentID, 
+                    {
+                        callInitiated: true,
+                        callTimestamp: new Date().toISOString()
+                    }
+                );
+                
+                // Update adherence answers if provided
+                if (adherenceData) {
+                    await this.cosmosDbService.updateAdherenceAnswers(
+                        this.patientRecord.DocumentID, 
+                        adherenceData
+                    );
+                    console.log('[Bot] Updated adherence answers in Cosmos DB');
+                }
+                
+                // Schedule appointment if data provided
+                if (appointmentData) {
+                    await this.cosmosDbService.scheduleFollowUpAppointment(
+                        this.patientRecord.DocumentID, 
+                        appointmentData
+                    );
+                    console.log('[Bot] Updated appointment data in Cosmos DB');
+                }
+                
+                // Mark call as completed if both adherence and appointment are done
+                if (adherenceData && appointmentData) {
+                    await this.cosmosDbService.markFollowUpCallCompleted(
+                        this.patientRecord.DocumentID,
+                        null // transcript URL can be added later
+                    );
+                    console.log('[Bot] Marked follow-up call as completed in Cosmos DB');
+                }
+                
+                console.log(`[Bot] Successfully updated patient data in Cosmos DB for ${this.patientRecord.patientName}`);
+            } else {
+                console.warn('[Bot] No Cosmos DB service available, falling back to local file');
+                this.savePatientCallDataToFile(adherenceData, appointmentData);
+            }
+        } catch (error) {
+            console.error('[Bot] Error saving patient call data to Cosmos DB:', error.message);
+            
+            // Fallback to local file update
+            this.savePatientCallDataToFile(adherenceData, appointmentData);
+        }
+    }
+
+    // Fallback method to save to local file (for development/backup)
+    savePatientCallDataToFile(adherenceData = null, appointmentData = null) {
         try {
             const patientsFilePath = path.join(__dirname, 'patients.json');
             const patientsData = JSON.parse(fs.readFileSync(patientsFilePath, 'utf-8'));
@@ -736,10 +791,10 @@ class EchoBot extends ActivityHandler {
                 
                 // Save back to file
                 fs.writeFileSync(patientsFilePath, JSON.stringify(patientsData, null, 2));
-                console.log(`[Bot] Updated patient data for ${this.patientRecord.patientName}`);
+                console.log(`[Bot] Updated local patient data file for ${this.patientRecord.patientName}`);
             }
         } catch (error) {
-            console.error('[Bot] Error saving patient call data:', error.message);
+            console.error('[Bot] Error saving patient data to local file:', error.message);
         }
     }
 }

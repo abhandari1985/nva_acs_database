@@ -44,10 +44,10 @@ app.get('/webchat', (req, res) => {
 });
 
 // Patient management API endpoints
-app.get('/api/patients', (req, res) => {
+app.get('/api/patients', async (req, res) => {
     try {
-        const stats = patientFactory.getPatientStats();
-        const patientsNeeding = patientFactory.getPatientsNeedingCalls();
+        const stats = await patientFactory.getPatientStats();
+        const patientsNeeding = await patientFactory.getPatientsNeedingCalls();
         
         res.json({
             stats,
@@ -65,9 +65,9 @@ app.get('/api/patients', (req, res) => {
     }
 });
 
-app.get('/api/patients/:documentId', (req, res) => {
+app.get('/api/patients/:documentId', async (req, res) => {
     try {
-        const patient = patientFactory.getPatientById(req.params.documentId);
+        const patient = await patientFactory.getPatientById(req.params.documentId);
         if (!patient) {
             return res.status(404).json({ error: 'Patient not found' });
         }
@@ -80,7 +80,7 @@ app.get('/api/patients/:documentId', (req, res) => {
 });
 
 // Port configuration
-const port = process.env.PORT || 3978;
+
 
 // DirectLine token endpoint for local development
 app.get('/api/directline/token', async (req, res) => {
@@ -148,8 +148,7 @@ app.post('/api/messages/conversations', async (req, res) => {
     }
 });
 
-app.listen(port, () => console.log(`Bot is listening on port ${port}`));
-
+// Bot Framework setup
 const botFrameworkAuthentication = new ConfigurationBotFrameworkAuthentication(process.env);
 
 const adapter = new CloudAdapter(botFrameworkAuthentication);
@@ -175,24 +174,66 @@ adapter.onTurnError = onTurnErrorHandler;
 // For demo purposes, we'll create a bot instance for the first patient
 // In production, you would create different bot instances for each patient call
 
-console.log('\n=== Patient Bot Factory Initialization ===');
-const patientStats = patientFactory.getPatientStats();
-console.log('Patient Statistics:', patientStats);
+// Global bot instance - will be initialized asynchronously
+let myBot = null;
+let demoPatient = null;
 
-// Select a patient for the demo (you can specify a name or get the next one)
-const demoPatient = patientFactory.selectPatientForDemo(); // or pass a name: .selectPatientForDemo('Anjali')
-const myBot = patientFactory.createBotForPatient(demoPatient);
+// Async initialization function
+async function initializeBot() {
+    try {
+        console.log('\n=== Patient Bot Factory Initialization ===');
+        
+        // Get patient statistics
+        const patientStats = await patientFactory.getPatientStats();
+        console.log('Patient Statistics:', patientStats);
 
-console.log(`\n=== Bot Created for Patient ===`);
-console.log(`Patient: ${demoPatient.patientName}`);
-console.log(`Doctor: Dr. ${demoPatient.doctorName}`);
-console.log(`Medication: ${demoPatient.prescriptions[0].medicationName} ${demoPatient.prescriptions[0].dosage}`);
-console.log(`Discharge Date: ${new Date(demoPatient.dischargeDate).toLocaleDateString()}`);
-console.log('=====================================\n');
+        // Select a patient for the demo (you can specify a name or get the next one)
+        demoPatient = await patientFactory.selectPatientForDemo(); // or pass a name: .selectPatientForDemo('Anjali')
+        
+        if (!demoPatient) {
+            console.error('❌ No demo patient available. Please run importData.js first to populate the database.');
+            process.exit(1);
+        }
+
+        myBot = patientFactory.createBotForPatient(demoPatient);
+
+        console.log(`\n=== Bot Created for Patient ===`);
+        console.log(`Patient: ${demoPatient.patientName}`);
+        console.log(`Doctor: Dr. ${demoPatient.doctorName}`);
+        
+        if (demoPatient.prescriptions && demoPatient.prescriptions.length > 0) {
+            console.log(`Medication: ${demoPatient.prescriptions[0].medicationName} ${demoPatient.prescriptions[0].dosage}`);
+        } else {
+            console.log('Medication: N/A');
+        }
+        
+        console.log(`Discharge Date: ${new Date(demoPatient.dischargeDate).toLocaleDateString()}`);
+        console.log('=====================================\n');
+        
+        console.log('🎉 Bot initialization completed successfully!');
+        console.log('🌐 Voice chat interface available at: http://localhost:3978/');
+        console.log('💬 WebChat interface available at: http://localhost:3978/webchat');
+        
+    } catch (error) {
+        console.error('❌ Error initializing bot:', error.message);
+        console.error('💡 Make sure to:');
+        console.error('   1. Check your .env file configuration');
+        console.error('   2. Verify Cosmos DB connection');
+        console.error('   3. Run importData.js to populate the database');
+        process.exit(1);
+    }
+}
 
 // Main Bot Framework message endpoint
 app.post('/api/messages', async (req, res) => {
     try {
+        // Ensure bot is initialized
+        if (!myBot) {
+            return res.status(503).json({ 
+                error: 'Bot is still initializing. Please wait a moment and try again.' 
+            });
+        }
+
         // Handle direct HTTP requests from voice chat interfaces
         if (req.body && req.body.text && req.body.type === 'message') {
             console.log('[Direct API] Received message:', req.body.text);
@@ -239,4 +280,12 @@ app.on('upgrade', async (req, socket, head) => {
     const streamingAdapter = new CloudAdapter(botFrameworkAuthentication);
     streamingAdapter.onTurnError = onTurnErrorHandler;
     await streamingAdapter.process(req, socket, head, (context) => myBot.run(context));
+});
+
+// Start server and initialize bot
+const server = app.listen(process.env.port || process.env.PORT || 3978, () => {
+    console.log(`\n🚀 Bot Framework server listening on port ${server.address().port}`);
+    
+    // Initialize the bot asynchronously after server starts
+    initializeBot();
 });
