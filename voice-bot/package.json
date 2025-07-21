@@ -7,7 +7,11 @@
     "main": "index.js",
     "scripts": {
         "start": "node index.js",
+        "start:voice": "node app.js",
+        "start:both": "concurrently \"npm run start\" \"npm run start:voice\"",
         "watch": "nodemon ./index.js",
+        "watch:voice": "nodemon ./app.js",
+        "watch:both": "concurrently \"npm run watch\" \"npm run watch:voice\"",
         "lint": "eslint .",
         "test": "echo \"Error: no test specified\" && exit 1"
     },
@@ -19,6 +23,7 @@
         "url": "https://github.com/abhandari1985/nva_acs_database.git"
     },
     "dependencies": {
+        "@azure/communication-call-automation": "^1.4.0",
         "@azure/communication-calling": "^1.37.1",
         "@azure/communication-common": "^2.4.0",
         "@azure/cosmos": "^4.5.0",
@@ -26,13 +31,14 @@
         "@microsoft/microsoft-graph-client": "^3.0.7",
         "axios": "^1.10.0",
         "botbuilder": "~4.23.0",
-        "dotenv": "^8.2.0",
+        "dotenv": "^8.6.0",
         "express": "^5.1.0",
         "microsoft-cognitiveservices-speech-sdk": "^1.45.0",
         "restify": "^8.0.0"
     },
     "devDependencies": {
         "@microsoft/microsoft-graph-types": "^2.40.0",
+        "concurrently": "^9.2.0",
         "eslint": "^7.0.0",
         "eslint-config-standard": "^14.1.1",
         "eslint-plugin-import": "^2.20.2",

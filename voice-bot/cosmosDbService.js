@@ -219,6 +219,61 @@ class CosmosDbService {
             throw error;
         }
     }
+
+    /**
+     * Update patient record with general data
+     * @param {string} patientId - Patient's ID
+     * @param {Object} updateData - Data to update
+     * @returns {Promise<Object>} Updated patient data
+     */
+    async updatePatientRecord(patientId, updateData) {
+        try {
+            // First, get the current patient record to obtain the DocumentID for partitioning
+            const patient = await this.getPatientById(patientId);
+            if (!patient) {
+                throw new Error(`Patient with ID ${patientId} not found`);
+            }
+
+            // Merge the update data with existing patient data
+            const updatedPatient = { ...patient, ...updateData };
+
+            const { resource: updatedItem } = await this.container
+                .item(patientId, patient.DocumentID)
+                .replace(updatedPatient);
+
+            console.log(`Patient record updated successfully for ID: ${patientId}`);
+            return updatedItem;
+        } catch (error) {
+            console.error("Error updating patient record:", error);
+            throw error;
+        }
+    }
+
+    /**
+     * Get patient by ID
+     * @param {string} patientId - Patient's ID
+     * @returns {Promise<Object|null>} Patient data or null if not found
+     */
+    async getPatientById(patientId) {
+        try {
+            const querySpec = {
+                query: "SELECT * FROM c WHERE c.id = @patientId",
+                parameters: [{
+                    name: "@patientId",
+                    value: patientId
+                }]
+            };
+
+            const { resources: patients } = await this.container.items
+                .query(querySpec)
+                .fetchAll();
+
+            return patients.length > 0 ? patients[0] : null;
+        } catch (error) {
+            console.error("Error getting patient by ID:", error);
+            throw error;
+        }
+    }
 }
 
 module.exports = CosmosDbService;
