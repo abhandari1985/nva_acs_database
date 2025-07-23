@@ -2,31 +2,47 @@
 
 ## 🎯 Project Overview
 
-A comprehensive healthcare voice bot system that combines Azure Communication Services for phone calls with Bot Framework for text conversations. The system provides automated patient outreach, medication reminders, and health check-ins through both voice calls and text chat.
+A comprehensive healthcare voice bot system that provides automated patient outreach through Azure Communication Services (ACS) phone calls. The system enables international calling for patient follow-ups, medication reminders, and health check-ins with real-time speech synthesis and recognition.
+
+**Current Status**: 
+- ✅ International voice calling working (US to India +91)
+- ✅ ACS webhook event processing 
+- ✅ Call connection and management
+- ⚠️ Speech Services integration (requires Azure portal configuration)
+- ✅ Patient data integration via Cosmos DB
 
 ## 🏗️ Architecture
 
 ```
-📱 Text Conversations          📞 Voice Phone Calls
-     ↓                              ↓
-┌─────────────────┐          ┌─────────────────┐
-│   index.js      │          │     app.js      │
-│ (Port 3978)     │          │ (Port 3979)     │
-│ Bot Framework   │          │ Call Automation │
-└─────────────────┘          └─────────────────┘
-     ↓                              ↓
-┌─────────────────┐          ┌─────────────────┐
-│     bot.js      │          │ Speech Services │
-│ Teams/Web Chat  │          │   + Phone API   │
-└─────────────────┘          └─────────────────┘
-             ↓                      ↓
-         ┌─────────────────────────────────┐
-         │      Shared Services            │
-         │ • cosmosDbService.js            │
-         │ • patientBotFactory.js          │
-         │ • Patient Database              │
-         └─────────────────────────────────┘
+📞 Voice Phone Calls (Primary Focus)
+     ↓
+┌─────────────────────────────────────┐
+│          app.js (Port 3979)         │
+│     Azure Communication Services    │
+│        Voice Call Server            │
+│                                     │
+│ • International calling (+91)       │
+│ • Real-time webhook processing      │
+│ • Call state management             │
+│ • Speech synthesis (TTS)            │
+│ • Speech recognition (STT)          │
+└─────────────────────────────────────┘
+     ↓
+┌─────────────────────────────────────┐
+│           Dev Tunnel                │
+│    (For ACS webhook callbacks)      │
+│ https://tunnel-3979.devtunnels.ms   │
+└─────────────────────────────────────┘
+     ↓
+┌─────────────────────────────────────┐
+│         Shared Services             │
+│ • cosmosDbService.js                │
+│ • Patient Database                  │
+│ • Azure Speech Services             │
+└─────────────────────────────────────┘
 ```
+
+**Optional Text Bot Server** (index.js on port 3978) available for Teams/Web Chat integration.
 
 ## 🚀 Quick Start
 

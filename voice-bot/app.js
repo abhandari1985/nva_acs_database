@@ -13,7 +13,13 @@ require('dotenv').config();
 const app = express();
 
 // --- MIDDLEWARE ---
-app.use(express.json());
+app.use(express.json({ 
+    limit: '10mb',
+    verify: (req, res, buf, encoding) => {
+        // Store raw body for debugging webhook issues
+        req.rawBody = buf.toString(encoding || 'utf8');
+    }
+}));
 app.use((req, res, next) => {
     console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
     next();
@@ -22,12 +28,19 @@ app.use((req, res, next) => {
 // --- CONFIGURATION ---
 const PORT = process.env.ACS_PORT || process.env.PORT || 3979; // Different port for ACS server
 const ACS_CONNECTION_STRING = process.env.ACS_CONNECTION_STRING;
+const ACS_PHONE_NUMBER = process.env.ACS_PHONE_NUMBER;
 const SPEECH_KEY = process.env.SPEECH_KEY;
 const SPEECH_REGION = process.env.SPEECH_REGION || 'eastus';
+const SPEECH_ENDPOINT = process.env.SPEECH_ENDPOINT;
 
 // Validate required environment variables
 if (!ACS_CONNECTION_STRING) {
     console.error('❌ ACS_CONNECTION_STRING environment variable is required');
+    process.exit(1);
+}
+
+if (!ACS_PHONE_NUMBER) {
+    console.error('❌ ACS_PHONE_NUMBER environment variable is required');
     process.exit(1);
 }
 
@@ -91,25 +104,112 @@ app.get('/health', (req, res) => {
 // --- MAIN ACS CALLBACK ENDPOINT ---
 app.post('/api/callbacks', async (req, res) => {
     try {
-        const events = Array.isArray(req.body) ? req.body : [req.body];
+        console.log('🔔 Received callback request');
+        console.log('📄 Content-Type:', req.get('Content-Type'));
+        console.log('📄 Raw body length:', req.rawBody ? req.rawBody.length : 'No raw body');
+        
+        // Add better JSON handling
+        let events;
+        try {
+            if (req.body && typeof req.body === 'object') {
+                events = req.body;
+            } else if (req.rawBody) {
+                console.log('🔧 Parsing raw body as JSON');
+                console.log('📄 Raw body:', req.rawBody.substring(0, 500) + (req.rawBody.length > 500 ? '...' : ''));
+                events = JSON.parse(req.rawBody);
+            } else {
+                console.log('⚠️ No body data received');
+                return res.sendStatus(200);
+            }
+            
+            events = Array.isArray(events) ? events : [events];
+            
+            console.log('✅ Parsed events count:', events.length);
+            console.log('📋 First event structure:', events[0] ? Object.keys(events[0]) : 'No events');
+        } catch (parseError) {
+            console.error('❌ JSON Parse Error:', parseError.message);
+            console.log('📄 Problematic raw body:', req.rawBody ? req.rawBody.substring(0, 200) : 'No raw body');
+            return res.status(400).json({ error: 'Invalid JSON format' });
+        }
         
         if (events.length === 0) {
+            console.log('⚠️ Empty events array received');
             return res.sendStatus(200);
         }
 
         // Process each event
         for (const event of events) {
-            if (!event || !event.type) {
+            if (!event) {
                 console.warn('⚠️ Received malformed event:', event);
                 continue;
             }
 
-            console.log(`[ACS Event] 📞 ${event.type} for call ${event.callConnectionId}`);
+            // --- HANDLE AZURE EVENT GRID SUBSCRIPTION VALIDATION ---
+            if (event.eventType === 'Microsoft.EventGrid.SubscriptionValidationEvent') {
+                console.log('🔐 Received Event Grid validation request');
+                
+                const validationCode = event.data?.validationCode;
+                
+                if (validationCode) {
+                    console.log('✅ Responding with validation code for Event Grid subscription');
+                    return res.status(200).json({
+                        validationResponse: validationCode
+                    });
+                } else {
+                    console.error('❌ No validation code found in validation event');
+                    return res.status(400).json({ error: 'Missing validation code' });
+                }
+            }
+
+            // --- HANDLE ACS COMMUNICATION EVENTS ---
+            // Support both Azure Event Grid and ACS webhook formats
+            let eventType = event.type || event.eventType;
+            let callConnectionId = event.callConnectionId || event.data?.callConnectionId;
+            
+            // Extract callConnectionId from subject if not directly available
+            if (!callConnectionId && event.subject) {
+                console.log(`🔍 Attempting to extract callConnectionId from subject: ${event.subject}`);
+                
+                // Subject format: "call/{callConnectionId}/startedBy/{participantId}"
+                const subjectParts = event.subject.split('/');
+                if (subjectParts.length >= 2 && subjectParts[0] === 'call') {
+                    callConnectionId = subjectParts[1];
+                    console.log(`✅ Extracted callConnectionId from subject: ${callConnectionId}`);
+                }
+            }
+            
+            // Also try to extract from data object if still not found
+            if (!callConnectionId && event.data) {
+                callConnectionId = event.data.callConnectionId || event.data.serverCallId;
+                if (callConnectionId) {
+                    console.log(`✅ Extracted callConnectionId from data: ${callConnectionId}`);
+                }
+            }
+            
+            if (!eventType) {
+                console.warn('⚠️ Received event without type:', event);
+                continue;
+            }
+
+            console.log(`[ACS Event] 📞 ${eventType} for call ${callConnectionId || 'UNKNOWN'}`);
+            
+            // Skip processing if we still don't have a callConnectionId
+            if (!callConnectionId) {
+                console.warn(`⚠️ Skipping event ${eventType} - no callConnectionId found`);
+                continue;
+            }
+            
+            // Create normalized event object
+            const normalizedEvent = {
+                ...event,
+                type: eventType,
+                callConnectionId: callConnectionId
+            };
             
             try {
-                await processAcsEvent(event);
+                await processAcsEvent(normalizedEvent);
             } catch (error) {
-                console.error(`❌ Error processing event ${event.type}:`, error.message);
+                console.error(`❌ Error processing event ${eventType}:`, error.message);
                 // Continue processing other events even if one fails
             }
         }
@@ -127,6 +227,7 @@ async function processAcsEvent(event) {
     
     switch (type) {
         case "Microsoft.Communication.CallConnected":
+        case "Microsoft.Communication.CallStarted":
             await handleCallConnected(event);
             break;
         case "Microsoft.Communication.RecognizeCompleted":
@@ -142,7 +243,11 @@ async function processAcsEvent(event) {
             await handlePlayFailed(event);
             break;
         case "Microsoft.Communication.CallDisconnected":
+        case "Microsoft.Communication.CallEnded":
             await handleCallDisconnected(event);
+            break;
+        case "Microsoft.Communication.ParticipantsUpdated":
+            console.log(`ℹ️ Participants updated for call: ${callConnectionId}`);
             break;
         default:
             console.log(`ℹ️ Unhandled event type: ${type}`);
@@ -156,15 +261,32 @@ async function handleCallConnected(event) {
     try {
         const callConnection = callClient.getCallConnection(callConnectionId);
         
-        // Find the patient record associated with this call
-        // In a production app, you'd pass the patient ID in the createCall request
-        // For now, we'll use a simplified approach
-        const patient = await getPatientForFollowUp();
+        // Get patient data from the stored call context (from trigger-call endpoint)
+        const storedCallContext = callStates.get(callConnectionId);
+        
+        let patient;
+        if (storedCallContext) {
+            // Use the patient data that was passed when the call was triggered
+            patient = {
+                patientName: storedCallContext.patientName || 'Test Patient',
+                phoneNumber: storedCallContext.phoneNumber,
+                doctorName: storedCallContext.doctorName || 'Test Doctor',
+                medication: 'prescribed medication'
+            };
+        } else {
+            // Fallback: try to get from Cosmos DB
+            patient = await getPatientForFollowUp();
+        }
         
         if (!patient) {
-            console.error('❌ Call connected but could not find a patient record');
-            await callConnection.hangUp(true);
-            return;
+            console.error('❌ Call connected but could not find patient data - using default');
+            // Instead of hanging up, use default patient data for testing
+            patient = {
+                patientName: 'Test Patient',
+                phoneNumber: '+919158066045',
+                doctorName: 'Test Doctor',
+                medication: 'prescribed medication'
+            };
         }
 
         // Initialize call state with proper timeout management
@@ -280,13 +402,12 @@ async function playTextToPatient(callConnection, text, listenAfterPlaying = fals
         console.log(`🔊 Playing to patient: "${text}"`);
         
         // Use Azure Speech Services for high-quality text-to-speech
+        // Fixed payload structure for Azure Communication Services
         await callConnection.getCallMedia().playToAll([{
             kind: 'textSource',
-            text: {
-                text: text,
-                voiceName: 'en-IN-NeerjaNeural', // Indian English voice for better localization
-                customVoiceEndpointId: process.env.CUSTOM_VOICE_ENDPOINT_ID // Optional custom voice
-            }
+            text: text,
+            voiceName: 'en-IN-NeerjaNeural', // Indian English voice for better localization
+            customVoiceEndpointId: process.env.CUSTOM_VOICE_ENDPOINT_ID // Optional custom voice
         }]);
         
         if (listenAfterPlaying) {
@@ -405,27 +526,27 @@ app.post('/api/trigger-call', async (req, res) => {
             },
             sourceCallIdNumber: {
                 kind: 'phoneNumber',
-                phoneNumber: process.env.ACS_PHONE_NUMBER
+                phoneNumber: ACS_PHONE_NUMBER
             }
         };
 
-        console.log(`📞 Making call from ${process.env.ACS_PHONE_NUMBER} to ${phoneNumber}`);
+        console.log(`📞 Making call from ${ACS_PHONE_NUMBER} to ${phoneNumber}`);
         
-        // Set callback URL for ACS events
-        const callbackUrl = process.env.ACS_CALLBACK_URL || `${req.protocol}://${req.get('host')}/api/callbacks`;
+        // Set callback URL for ACS events - use Dev Tunnel URL for Azure to reach us
+        const callbackUrl = process.env.ACS_CALLBACK_URL || 'https://ks4mqb43-3979.inc1.devtunnels.ms/api/callbacks';
+        
+        console.log(`🔗 Using callback URL: ${callbackUrl}`);
         
         const createCallResult = await callClient.createCall(
             callInvite,
-            callbackUrl,
-            {
-                cognitiveServicesEndpoint: process.env.SPEECH_ENDPOINT // Optional: for better speech recognition
-            }
+            callbackUrl
+            // Note: Speech Services must be configured at the ACS resource level in Azure portal
         );
 
         const callConnectionId = createCallResult.callConnection.callConnectionId;
         
-        // Store call context for later use
-        callStates[callConnectionId] = {
+        // Store call context for later use (using Map.set for consistency)
+        callStates.set(callConnectionId, {
             patientId,
             patientName,
             doctorName,
@@ -433,7 +554,7 @@ app.post('/api/trigger-call', async (req, res) => {
             phoneNumber,
             conversationHistory: [],
             startTime: new Date().toISOString()
-        };
+        });
 
         console.log(`✅ Call initiated successfully! Call ID: ${callConnectionId}`);
         
@@ -501,6 +622,7 @@ app.listen(PORT, () => {
     // Optional: Display configuration status
     console.log('\n📋 Configuration Status:');
     console.log(`   ✅ ACS Connection: ${ACS_CONNECTION_STRING ? 'Configured' : '❌ Missing'}`);
+    console.log(`   ✅ ACS Phone Number: ${ACS_PHONE_NUMBER || '❌ Missing'}`);
     console.log(`   ✅ Speech Service: ${SPEECH_KEY ? 'Configured' : '❌ Missing'}`);
     console.log(`   ✅ Speech Region: ${SPEECH_REGION}`);
     console.log(`   ✅ Cosmos DB: ${cosmosDbService ? 'Initialized' : '❌ Failed'}`);

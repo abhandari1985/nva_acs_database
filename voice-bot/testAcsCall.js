@@ -1,4 +1,5 @@
-const axios = require('axios');
+const { CallAutomationClient } = require('@azure/communication-call-automation');
+require('dotenv').config();
 
 async function testAcsCall() {
     try {
@@ -13,19 +14,53 @@ async function testAcsCall() {
         };
         
         console.log('📋 Call Details:');
-        console.log(`  📞 From: +18667759336 (US ACS Number)`);
+        console.log(`  📞 From: ${process.env.ACS_PHONE_NUMBER} (US ACS Number)`);
         console.log(`  📞 To: ${callData.phoneNumber} (Indian Number)`);
         console.log(`  👤 Patient: ${callData.patientName}`);
         console.log(`  🩺 Doctor: Dr. ${callData.doctorName}\n`);
         
+        if (!process.env.ACS_CONNECTION_STRING) {
+            console.error('❌ ACS_CONNECTION_STRING is missing. Cannot proceed.');
+            return;
+        }
+        
         console.log('🚀 Initiating test call...');
         
-        const response = await axios.post('https://7xkq0gtv-3979.inc1.devtunnels.ms/api/trigger-call', callData, {
-            headers: { 'Content-Type': 'application/json' },
-            timeout: 30000
-        });
+        // Initialize ACS client directly (like diagnoseAcs.js)
+        const callClient = new CallAutomationClient(process.env.ACS_CONNECTION_STRING);
         
-        console.log('✅ Call Response:', response.data);
+        // Create the call invite
+        const callInvite = {
+            targetParticipant: {
+                kind: 'phoneNumber',
+                phoneNumber: callData.phoneNumber
+            },
+            sourceCallIdNumber: {
+                kind: 'phoneNumber', 
+                phoneNumber: process.env.ACS_PHONE_NUMBER
+            }
+        };
+        
+        console.log('📋 Call Configuration:');
+        console.log(`   From: ${process.env.ACS_PHONE_NUMBER}`);
+        console.log(`   To: ${callData.phoneNumber}`);
+        console.log(`   Callback URL: ${process.env.ACS_CALLBACK_URL}\n`);
+        
+        // Make the call directly through ACS
+        const createCallResult = await callClient.createCall(
+            callInvite,
+            process.env.ACS_CALLBACK_URL,
+            {
+                cognitiveServicesConfiguration: {
+                    speechServiceEndpoint: process.env.SPEECH_ENDPOINT,
+                    speechServiceApiKey: process.env.SPEECH_KEY,
+                    speechServiceRegion: process.env.SPEECH_REGION
+                }
+            }
+        );
+        
+        console.log('✅ Call Response: Call initiated successfully!');
+        console.log('📞 Call Connection ID:', createCallResult.callConnection.callConnectionId);
         console.log('\n🎉 What should happen:');
         console.log('1. Your Indian phone (+919158066045) should ring');
         console.log('2. The call is from US number +18667759336');
@@ -35,12 +70,22 @@ async function testAcsCall() {
         
     } catch (error) {
         console.error('❌ Test call failed:', error.message);
+        console.error('🔍 Error Code:', error.code || 'Unknown');
+        console.error('📊 Status Code:', error.statusCode || 'Unknown');
         
-        if (error.response) {
-            console.log('📝 Error details:', error.response.data);
+        if (error.message.includes('400')) {
+            console.log('\n💡 Possible Solutions:');
+            console.log('   • Check if international calling is enabled on your ACS resource');
+            console.log('   • Verify phone number format (+country_code_number)');
+            console.log('   • Ensure ACS phone number is correctly configured');
+        } else if (error.message.includes('403')) {
+            console.log('\n💡 Possible Solutions:');
+            console.log('   • Check ACS resource permissions');
+            console.log('   • Verify ACS connection string is correct');
+            console.log('   • Ensure calling plan includes outbound calls');
         }
         
-        console.log('\n🔧 Troubleshooting:');
+        console.log('\n🔧 Basic Troubleshooting:');
         console.log('1. Ensure voice server is running: npm run start:voice');
         console.log('2. Ensure Dev Tunnel is active');
         console.log('3. Check ACS account has international calling enabled');

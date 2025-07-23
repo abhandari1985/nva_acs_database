@@ -4,21 +4,29 @@
 
 ```
 voice-bot/
-├── app.js                    # Voice calling server (ACS)
+├── app.js                    # Voice calling server (ACS) - Primary voice server
 ├── index.js                  # Text bot server (Bot Framework) 
 ├── bot.js                    # Bot logic for text conversations
 ├── cosmosDbService.js        # Cosmos DB operations
 ├── patientBotFactory.js      # Patient data management
-├── speechService.js          # Azure Speech Services
 ├── schedulingPlugin.js       # Appointment scheduling
+├── testAcsCall.js           # Voice calling test script for ACS
 ├── .env                      # Environment configuration
 ├── .env.example             # Environment template
 ├── package.json             # Dependencies and scripts
-├── testAcsCall.js           # Voice calling test script
 ├── setupTestPatients.js     # Patient data setup
 ├── showPatientsForCalling.js # Patient listing utility
+├── updatePhoneNumbers.js    # Phone number management utility
+├── verifyPhoneNumbers.js    # Phone number verification utility
+├── importData.js            # Data import utility
 └── deploymentScripts/       # Azure deployment scripts
 ```
+
+**Note**: Recently removed files for cleanup:
+- `speechService.js` (functionality integrated into app.js)
+- `diagnose.js` and `diagnoseAcs.js` (diagnostic tools no longer needed)
+- `index.html` and `local-voice-chat.html` (unused frontend files)
+- `startup.cmd` and `startup.sh` (replaced by npm scripts)
 
 ## 🔧 Development Setup
 
@@ -32,36 +40,72 @@ voice-bot/
    # Install dependencies
    npm install
    
-   # Start development servers
+   # Start voice server only (recommended for ACS development)
+   npm run start:voice
+   # OR start both servers (voice + text bot)
    npm run start:both
    ```
 
-2. **Dev Tunnel Configuration:**
+2. **Dev Tunnel Configuration for ACS Callbacks:**
    ```bash
    # Install Microsoft Dev Tunnel
    winget install Microsoft.DevTunnel
    
-   # Create tunnel for voice callbacks
+   # Create tunnel for voice callbacks (port 3979)
    devtunnel create --allow-anonymous
    devtunnel port create -p 3979
    devtunnel host
+   
+   # Update ACS_CALLBACK_URL in .env with your tunnel URL
+   # Example: ACS_CALLBACK_URL="https://your-tunnel-id-3979.inc1.devtunnels.ms/api/callbacks"
+   ```
+
+3. **Azure Communication Services Setup:**
+   ```bash
+   # Required environment variables for ACS:
+   ACS_CONNECTION_STRING="endpoint=https://your-acs-resource.communication.azure.com/;accesskey=..."
+   ACS_PHONE_NUMBER="+1234567890"  # Your ACS phone number
+   ACS_CALLBACK_URL="https://your-tunnel-3979.inc1.devtunnels.ms/api/callbacks"
+   
+   # Azure Speech Services (for TTS/STT):
+   SPEECH_KEY="your-speech-service-key"
+   SPEECH_REGION="eastus2"
+   SPEECH_ENDPOINT="https://your-speech-resource.cognitiveservices.azure.com/"
    ```
 
 ### Code Organization
 
-#### app.js - Voice Calling Server
+#### app.js - Voice Calling Server (Primary Focus)
+
 - **Port**: 3979
 - **Purpose**: Handles Azure Communication Services voice calls
-- **Key Functions**:
-  - `/api/trigger-call` - Initiate outbound calls
-  - `/api/callbacks` - ACS webhook events
-  - Call state management
-  - Speech synthesis and recognition
+- **Key Features**:
+  - International calling to patients (+919158066045 format)
+  - Real-time webhook processing for ACS events
+  - Dual event format support (Azure Event Grid + ACS native)
+  - Call state management with automatic cleanup
+  - Speech synthesis integration (TTS) 
+  - Speech recognition integration (STT)
+  - Patient data integration via Cosmos DB
 
-#### index.js - Text Bot Server  
+- **Key Endpoints**:
+  - `/api/trigger-call` - Initiate outbound calls to patients
+  - `/api/callbacks` - ACS webhook events (CallConnected, CallEnded, etc.)
+  - `/health` - Health check endpoint
+
+- **Current Status**: 
+  - ✅ Call connection working (calls reach target phone)
+  - ✅ Webhook event processing working
+  - ✅ Dev Tunnel integration working  
+  - ⚠️ Speech Services integration requires Azure portal configuration
+  - ✅ International calling to India (+91) working
+
+#### index.js - Text Bot Server (Optional)
+
 - **Port**: 3978
 - **Purpose**: Bot Framework text conversations
 - **Integrations**: Teams, Web Chat, Direct Line
+- **Status**: Independent from voice calling functionality
 
 #### cosmosDbService.js - Data Layer
 - **Authentication**: Managed Identity or connection string
@@ -70,25 +114,41 @@ voice-bot/
 
 ### Testing Workflow
 
-1. **Voice Call Testing:**
+1. **Voice Call Testing (ACS):**
    ```bash
-   # Test international calling
+   # Test ACS voice calling with your phone number
    node testAcsCall.js
    
-   # Check available patients
+   # Check available patients in database
    node showPatientsForCalling.js
+   
+   # Update phone numbers for testing
+   node updatePhoneNumbers.js
+   
+   # Verify phone number configurations
+   node verifyPhoneNumbers.js
    ```
 
-2. **Text Bot Testing:**
+2. **Text Bot Testing (Optional):**
    - Use Bot Framework Emulator
    - Test in Teams or Web Chat
    - Direct Line API testing
 
 3. **Data Integration Testing:**
    ```bash
-   # Setup test patients
+   # Setup test patients in Cosmos DB
    node setupTestPatients.js
+   
+   # Import additional patient data
+   node importData.js
    ```
+
+4. **End-to-End ACS Testing Process:**
+   - Start voice server: `npm run start:voice` 
+   - Start Dev Tunnel on port 3979
+   - Run test call: `node testAcsCall.js`
+   - Monitor webhook events in server logs
+   - Answer call on your phone to test TTS/STT
 
 ## 🏗️ Architecture Details
 
@@ -156,15 +216,32 @@ graph TD
 
 ### Common Issues
 
-1. **"PhoneNumberIdentifier is not a constructor"**
+1. **"Request not allowed when Cognitive Service Configuration not set during call setup"**
+   - **Cause**: Speech Services not properly linked to ACS resource
+   - **Solution**: 
+     - Link Speech Services resource to ACS in Azure portal
+     - Verify Speech Services region matches ACS region
+     - Check Speech Services permissions and configuration
+
+2. **"PhoneNumberIdentifier is not a constructor"**
    - **Cause**: Azure SDK version incompatibility
    - **Solution**: Use object format `{kind: 'phoneNumber', phoneNumber: '+1234567890'}`
 
-2. **"ACS callback timeout"**
-   - **Cause**: Dev Tunnel not accessible
-   - **Solution**: Verify tunnel URL in `ACS_CALLBACK_URL`
+3. **"ACS callback timeout" or Webhook not received**
+   - **Cause**: Dev Tunnel not accessible or incorrect callback URL
+   - **Solution**: 
+     - Verify Dev Tunnel is running: `devtunnel host`
+     - Check tunnel URL in `ACS_CALLBACK_URL` environment variable
+     - Ensure port 3979 is correctly forwarded
 
-3. **"Cosmos DB connection failed"**
+4. **"Call connection failed" or International calling issues**
+   - **Cause**: Phone number format or calling permissions
+   - **Solution**:
+     - Use international format: `+919158066045` (include country code)
+     - Verify ACS resource has international calling enabled
+     - Check outbound calling plan on ACS resource
+
+5. **"Cosmos DB connection failed"**
    - **Cause**: Authentication or network issues
    - **Solution**: Check connection string and firewall rules
 
