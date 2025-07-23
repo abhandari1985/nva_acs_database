@@ -46,17 +46,22 @@ async function testAcsCall() {
         console.log(`   To: ${callData.phoneNumber}`);
         console.log(`   Callback URL: ${process.env.ACS_CALLBACK_URL}\n`);
         
-        // Make the call directly through ACS
+        // Make the call with Cognitive Services configuration (like the working Python version)
+        const createCallOptions = {
+            cognitiveServicesEndpoint: process.env.COGNITIVE_SERVICES_ENDPOINT,
+            callIntelligenceOptions: {
+                cognitiveServicesEndpoint: process.env.COGNITIVE_SERVICES_ENDPOINT
+            }
+        };
+        
+        console.log('🧠 Cognitive Services Configuration:');
+        console.log(`   Endpoint: ${process.env.COGNITIVE_SERVICES_ENDPOINT}`);
+        console.log(`   Call Intelligence: Enabled\n`);
+        
         const createCallResult = await callClient.createCall(
             callInvite,
             process.env.ACS_CALLBACK_URL,
-            {
-                cognitiveServicesConfiguration: {
-                    speechServiceEndpoint: process.env.SPEECH_ENDPOINT,
-                    speechServiceApiKey: process.env.SPEECH_KEY,
-                    speechServiceRegion: process.env.SPEECH_REGION
-                }
-            }
+            createCallOptions
         );
         
         console.log('✅ Call Response: Call initiated successfully!');

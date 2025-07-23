@@ -7,6 +7,7 @@ const { CallAutomationClient } = require('@azure/communication-call-automation')
 const { DefaultAzureCredential } = require('@azure/identity');
 const { SpeechConfig, SpeechSynthesizer, AudioConfig } = require('microsoft-cognitiveservices-speech-sdk');
 const CosmosDbService = require('./cosmosDbService');
+const { PatientBot } = require('./patientBot');
 
 require('dotenv').config();
 
@@ -22,6 +23,7 @@ app.use(express.json({
 }));
 app.use((req, res, next) => {
     console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
+    console.log('🔍 Request Headers:', JSON.stringify(req.headers, null, 2));
     next();
 });
 
@@ -89,6 +91,44 @@ function setCallTimeout(callConnectionId) {
     
     if (callStates.has(callConnectionId)) {
         callStates.get(callConnectionId).timeoutId = timeoutId;
+    }
+}
+
+/**
+ * Initialize PatientBot with enhanced error handling and validation
+ * @param {Object} patient - Patient record data
+ * @param {Object} cosmosDbService - Cosmos DB service instance
+ * @returns {Object|null} - PatientBot instance or null if initialization fails
+ */
+function initializePatientBot(patient, cosmosDbService) {
+    try {
+        // Validate patient data before creating PatientBot
+        if (!patient || !patient.patientName) {
+            console.error('❌ Invalid patient data for PatientBot initialization');
+            return null;
+        }
+        
+        // Ensure patient data has required fields for PatientBot
+        const patientData = {
+            patientName: patient.patientName,
+            doctorName: patient.doctorName || 'Doctor',
+            DocumentID: patient.DocumentID || `temp-${Date.now()}`,
+            prescriptions: patient.prescriptions || [{
+                medicationName: patient.primaryMedication || 'prescribed medication',
+                dosage: patient.dosage || '10mg',
+                frequency: patient.frequency || 'once daily'
+            }],
+            primaryMedication: patient.primaryMedication || patient.prescriptions?.[0]?.medicationName || 'prescribed medication'
+        };
+        
+        const patientBot = new PatientBot(patientData, cosmosDbService);
+        console.log(`✅ PatientBot initialized successfully for ${patient.patientName}`);
+        return patientBot;
+        
+    } catch (error) {
+        console.error('❌ Error initializing PatientBot:', error.message);
+        console.error('📊 Patient data:', JSON.stringify(patient, null, 2));
+        return null;
     }
 }
 
@@ -271,7 +311,13 @@ async function handleCallConnected(event) {
                 patientName: storedCallContext.patientName || 'Test Patient',
                 phoneNumber: storedCallContext.phoneNumber,
                 doctorName: storedCallContext.doctorName || 'Test Doctor',
-                medication: 'prescribed medication'
+                primaryMedication: 'prescribed medication',
+                prescriptions: [{
+                    medicationName: storedCallContext.medication || 'prescribed medication',
+                    dosage: '10mg',
+                    frequency: 'once daily'
+                }],
+                DocumentID: storedCallContext.patientId || 'test-001'
             };
         } else {
             // Fallback: try to get from Cosmos DB
@@ -285,7 +331,13 @@ async function handleCallConnected(event) {
                 patientName: 'Test Patient',
                 phoneNumber: '+919158066045',
                 doctorName: 'Test Doctor',
-                medication: 'prescribed medication'
+                primaryMedication: 'prescribed medication',
+                prescriptions: [{
+                    medicationName: 'prescribed medication',
+                    dosage: '10mg',
+                    frequency: 'once daily'
+                }],
+                DocumentID: 'test-default-001'
             };
         }
 
@@ -297,12 +349,37 @@ async function handleCallConnected(event) {
             status: 'connected'
         });
         
+        // Create PatientBot instance for this specific call
+        const patientBot = initializePatientBot(patient, cosmosDbService);
+        
+        // Update call state to include PatientBot instance
+        callStates.set(callConnectionId, {
+            patient: patient,
+            patientBot: patientBot,
+            conversationHistory: [],
+            callStartTime: new Date(),
+            status: 'connected'
+        });
+        
         setCallTimeout(callConnectionId);
 
         console.log(`✅ Call connected for patient: ${patient.patientName} (${patient.phoneNumber})`);
 
-        // Personalized greeting based on patient data
-        const greeting = `Hello ${patient.patientName}. This is Alex, your virtual healthcare assistant from the post-discharge care team, calling on behalf of Dr. ${patient.doctorName}. Is now a good time to talk briefly about your new medication protocol?`;
+        // Generate personalized greeting using PatientBot
+        let greeting;
+        if (patientBot) {
+            try {
+                greeting = await patientBot.processMessage('__START_CALL__');
+                console.log('✅ PatientBot generated greeting successfully');
+            } catch (error) {
+                console.error('❌ Error generating PatientBot greeting:', error.message);
+                // Fallback to basic greeting
+                greeting = `Hello ${patient.patientName}. This is Alex, your virtual healthcare assistant from the post-discharge care team, calling on behalf of Dr. ${patient.doctorName}. Is now a good time to talk briefly about your new medication protocol?`;
+            }
+        } else {
+            // Fallback greeting when PatientBot is not available
+            greeting = `Hello ${patient.patientName}. This is Alex, your virtual healthcare assistant from the post-discharge care team, calling on behalf of Dr. ${patient.doctorName}. Is now a good time to talk briefly about your new medication protocol?`;
+        }
         
         await playTextToPatient(callConnection, greeting, true);
         
@@ -334,9 +411,27 @@ async function handleRecognizeCompleted(event) {
 
         console.log(`[STT] 🗣️ User said: "${userText}"`);
 
-        // --- PLACEHOLDER FOR AI AGENT INTEGRATION ---
-        // Tomorrow, we will replace this with our AI Agent service
-        const agentReply = await generateAgentResponse(userText, callState);
+        // Generate intelligent response using PatientBot
+        let agentReply;
+        if (callState.patientBot) {
+            try {
+                agentReply = await callState.patientBot.processMessage(userText);
+                console.log('✅ PatientBot generated response successfully');
+                
+                // Log conversation progress
+                const conversationState = callState.patientBot.getConversationState();
+                console.log(`📊 Conversation State: ${conversationState.activeAgent} | Completed: Triage=${conversationState.triageCompleted}, Adherence=${conversationState.adherenceCompleted}, Scheduling=${conversationState.schedulingCompleted}`);
+                
+            } catch (error) {
+                console.error('❌ Error generating PatientBot response:', error.message);
+                // Fallback to basic response
+                agentReply = await generateFallbackResponse(userText, callState);
+            }
+        } else {
+            // Fallback when PatientBot is not available
+            console.log('⚠️ Using fallback response - PatientBot not available');
+            agentReply = await generateFallbackResponse(userText, callState);
+        }
         
         // Update conversation history
         callState.conversationHistory.push({ 
@@ -349,6 +444,23 @@ async function handleRecognizeCompleted(event) {
             content: agentReply,
             timestamp: new Date()
         });
+        
+        // Check if PatientBot indicates conversation is complete
+        if (callState.patientBot) {
+            const conversationState = callState.patientBot.getConversationState();
+            if (conversationState.callCompleted) {
+                console.log('🎯 PatientBot indicates conversation is complete - preparing to end call');
+                // Add a brief pause after the final message, then end the call gracefully
+                setTimeout(async () => {
+                    try {
+                        await callConnection.hangUp();
+                        console.log('📞 Call ended gracefully after conversation completion');
+                    } catch (error) {
+                        console.error('❌ Error ending call:', error.message);
+                    }
+                }, 3000); // 3 second delay to let the final message play
+            }
+        }
         
         await playTextToPatient(callConnection, agentReply, true);
         
@@ -401,14 +513,43 @@ async function playTextToPatient(callConnection, text, listenAfterPlaying = fals
     try {
         console.log(`🔊 Playing to patient: "${text}"`);
         
-        // Use Azure Speech Services for high-quality text-to-speech
-        // Fixed payload structure for Azure Communication Services
-        await callConnection.getCallMedia().playToAll([{
-            kind: 'textSource',
-            text: text,
-            voiceName: 'en-IN-NeerjaNeural', // Indian English voice for better localization
-            customVoiceEndpointId: process.env.CUSTOM_VOICE_ENDPOINT_ID // Optional custom voice
-        }]);
+        // Try multiple approaches for Speech Services integration
+        try {
+            // Remove SSML tags for ACS compatibility and extract plain text
+            const plainText = text.replace(/<[^>]*>/g, '').trim();
+            console.log(`🔊 Simplified text: "${plainText}"`);
+            
+            // Method 1: Use plain text with voice configuration
+            await callConnection.getCallMedia().playToAll([{
+                kind: 'textSource',
+                text: plainText,
+                voiceName: 'en-US-JennyNeural',
+                sourceLocale: 'en-US'
+            }]);
+            console.log('✅ Speech playback initiated successfully');
+        } catch (speechError) {
+            console.error('❌ Speech Services error:', speechError.message);
+            
+            // Method 2: Try with even simpler text
+            try {
+                await callConnection.getCallMedia().playToAll([{
+                    kind: 'textSource',
+                    text: 'Hello, this is your healthcare assistant calling. Can you hear me?',
+                    voiceName: 'en-US-JennyNeural',
+                    sourceLocale: 'en-US'
+                }]);
+                console.log('✅ Fallback speech with simple text initiated');
+            } catch (fallbackError) {
+                console.error('❌ Fallback speech also failed:', fallbackError.message);
+                
+                // Method 3: Try with minimal configuration
+                await callConnection.getCallMedia().playToAll([{
+                    kind: 'textSource',
+                    text: 'Hello'
+                }]);
+                console.log('⚠️ Using minimal text as last resort');
+            }
+        }
         
         if (listenAfterPlaying) {
             // Start listening for the user's response with optimized settings
@@ -416,19 +557,25 @@ async function playTextToPatient(callConnection, text, listenAfterPlaying = fals
             const patientPhoneNumber = callState?.patient?.phoneNumber;
             
             if (patientPhoneNumber) {
-                await callConnection.getCallMedia().startRecognizing({
-                    targetParticipant: {
-                        kind: 'phoneNumber',
-                        phoneNumber: patientPhoneNumber
-                    },
-                    recognizeOptions: {
-                        interruptPrompt: true,
-                        initialSilenceTimeoutInSeconds: 5,
-                        maxTonesToCollect: 0, // We want speech, not DTMF
-                        speechLanguage: 'en-IN', // Indian English for better recognition
-                        speechModelEndpointId: process.env.CUSTOM_SPEECH_ENDPOINT_ID // Optional custom speech model
-                    }
-                });
+                try {
+                    await callConnection.getCallMedia().startRecognizing({
+                        targetParticipant: {
+                            kind: 'phoneNumber',
+                            phoneNumber: patientPhoneNumber
+                        },
+                        recognizeOptions: {
+                            interruptPrompt: true,
+                            initialSilenceTimeoutInSeconds: 5,
+                            maxTonesToCollect: 0, // We want speech, not DTMF
+                            speechLanguage: 'en-IN', // Indian English for better recognition
+                            speechModelEndpointId: process.env.CUSTOM_SPEECH_ENDPOINT_ID // Optional custom speech model
+                        }
+                    });
+                    console.log('✅ Speech recognition started');
+                } catch (recognizeError) {
+                    console.error('❌ Speech recognition setup failed:', recognizeError.message);
+                    // Continue without speech recognition
+                }
             }
         }
     } catch (error) {
@@ -437,14 +584,14 @@ async function playTextToPatient(callConnection, text, listenAfterPlaying = fals
     }
 }
 
-async function generateAgentResponse(userText, callState) {
-    // PLACEHOLDER: This will be replaced with actual AI agent integration
-    // For now, return a context-aware response
+async function generateFallbackResponse(userText, callState) {
+    // FALLBACK: Basic rule-based responses when PatientBot is not available
+    // This ensures the voice server can still function if PatientBot fails
     
     const patient = callState.patient;
     const conversationLength = callState.conversationHistory.length;
     
-    // Simple rule-based responses for initial testing
+    // Simple rule-based responses for emergency fallback
     const lowerText = userText.toLowerCase();
     
     if (lowerText.includes('yes') || lowerText.includes('good time')) {
@@ -539,8 +686,11 @@ app.post('/api/trigger-call', async (req, res) => {
         
         const createCallResult = await callClient.createCall(
             callInvite,
-            callbackUrl
-            // Note: Speech Services must be configured at the ACS resource level in Azure portal
+            callbackUrl,
+            {
+                // Add cognitive services configuration like the working Python version
+                cognitiveServicesEndpoint: process.env.SPEECH_ENDPOINT || process.env.COGNITIVE_SERVICES_ENDPOINT
+            }
         );
 
         const callConnectionId = createCallResult.callConnection.callConnectionId;

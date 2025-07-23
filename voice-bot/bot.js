@@ -657,55 +657,11 @@ class EchoBot extends ActivityHandler {
 
     // Enhanced speech formatting for better TTS quality
     formatSpeechResponse(text, context = 'normal') {
-        const ssmlTemplates = {
-            welcome: `<speak version="1.0" xml:lang="en-US">
-                <voice name="en-US-JennyNeural" style="customerservice" styledegree="0.8">
-                    <prosody rate="0.9" pitch="medium">
-                        ${text}
-                    </prosody>
-                </voice>
-            </speak>`,
-
-            adherence: `<speak version="1.0" xml:lang="en-US">
-                <voice name="en-US-JennyNeural" style="empathetic">
-                    <prosody rate="0.85" pitch="medium">
-                        ${text.replace(/(\d+)\s*(mg|milligrams?|mcg|micrograms?)/gi,
-                            '<emphasis level="moderate">$1 $2</emphasis>')
-                            .replace(/(once|twice|three times|four times)\s+(daily|a day|per day)/gi,
-                            '<emphasis level="moderate">$1 $2</emphasis>')
-                            .replace(/(levothyroxine|metformin|amoxicillin|lisinopril|ibuprofen)/gi,
-                            '<emphasis level="moderate">$1</emphasis>')}
-                    </prosody>
-                </voice>
-            </speak>`,
-
-            scheduling: `<speak version="1.0" xml:lang="en-US">
-                <voice name="en-US-JennyNeural" style="customerservice">
-                    <prosody rate="0.9">
-                        ${text.replace(/(\d{1,2}:\d{2}\s*(AM|PM))/gi,
-                            '<emphasis level="strong">$1</emphasis>')}
-                    </prosody>
-                </voice>
-            </speak>`,
-
-            emergency: `<speak version="1.0" xml:lang="en-US">
-                <voice name="en-US-JennyNeural" style="urgent">
-                    <prosody rate="1.0" pitch="high">
-                        <emphasis level="strong">${text}</emphasis>
-                    </prosody>
-                </voice>
-            </speak>`,
-
-            normal: `<speak version="1.0" xml:lang="en-US">
-                <voice name="en-US-JennyNeural" style="customerservice">
-                    <prosody rate="0.9" pitch="medium">
-                        ${text}
-                    </prosody>
-                </voice>
-            </speak>`
-        };
-
-        return ssmlTemplates[context] || ssmlTemplates.normal;
+        // Return plain text for ACS compatibility
+        // Azure Communication Services doesn't support complex SSML
+        console.log(`[Bot] 🔊 Formatting speech for context: ${context}`);
+        console.log(`[Bot] 📝 Plain text: "${text}"`);
+        return text; // Just return the plain text without SSML wrapping
     }
 
     // Save patient call data and update Cosmos DB
