@@ -255,6 +255,127 @@ app.get('/health', (req, res) => {
     });
 });
 
+// --- CONVERSATION MONITORING DASHBOARD ---
+app.get('/api/conversation-status', (req, res) => {
+    try {
+        console.log('📊 Conversation status requested');
+        
+        const activeConversations = [];
+        const callSummary = {
+            totalActiveCalls: callStates.size,
+            conversationsInProgress: 0,
+            triageCompleted: 0,
+            adherenceCompleted: 0,
+            schedulingCompleted: 0,
+            callsCompleted: 0
+        };
+        
+        // Analyze each active call state
+        for (const [callId, callState] of callStates.entries()) {
+            const conversationState = callState.patientBot?.getConversationState();
+            
+            const callInfo = {
+                callId: callId,
+                patientId: callState.patientId,
+                patientName: callState.patientName,
+                startTime: callState.startTime,
+                duration: callState.startTime ? Math.floor((Date.now() - callState.startTime.getTime()) / 1000) : 0,
+                conversationHistory: callState.conversationHistory?.length || 0,
+                currentState: conversationState ? {
+                    activeAgent: conversationState.activeAgent,
+                    triageCompleted: conversationState.triageCompleted,
+                    adherenceCompleted: conversationState.adherenceCompleted,
+                    schedulingCompleted: conversationState.schedulingCompleted,
+                    callCompleted: conversationState.callCompleted
+                } : null,
+                lastActivity: callState.conversationHistory?.length > 0 ? 
+                    callState.conversationHistory[callState.conversationHistory.length - 1].timestamp : 
+                    callState.startTime
+            };
+            
+            activeConversations.push(callInfo);
+            
+            // Update summary stats
+            if (conversationState) {
+                callSummary.conversationsInProgress++;
+                if (conversationState.triageCompleted) callSummary.triageCompleted++;
+                if (conversationState.adherenceCompleted) callSummary.adherenceCompleted++;
+                if (conversationState.schedulingCompleted) callSummary.schedulingCompleted++;
+                if (conversationState.callCompleted) callSummary.callsCompleted++;
+            }
+        }
+        
+        res.json({
+            summary: callSummary,
+            activeConversations: activeConversations,
+            timestamp: new Date().toISOString()
+        });
+        
+    } catch (error) {
+        console.error('❌ Error getting conversation status:', error.message);
+        res.status(500).json({ 
+            error: 'Failed to get conversation status',
+            timestamp: new Date().toISOString() 
+        });
+    }
+});
+
+// --- DETAILED CALL ANALYSIS ---
+app.get('/api/call-details/:callId', (req, res) => {
+    try {
+        const callId = req.params.callId;
+        const callState = callStates.get(callId);
+        
+        if (!callState) {
+            return res.status(404).json({ 
+                error: 'Call not found',
+                callId: callId,
+                timestamp: new Date().toISOString()
+            });
+        }
+        
+        const conversationState = callState.patientBot?.getConversationState();
+        
+        const detailedInfo = {
+            callId: callId,
+            patientInfo: {
+                id: callState.patientId,
+                name: callState.patientName,
+                phoneNumber: callState.phoneNumber
+            },
+            callDetails: {
+                startTime: callState.startTime,
+                duration: callState.startTime ? Math.floor((Date.now() - callState.startTime.getTime()) / 1000) : 0,
+                status: conversationState?.callCompleted ? 'completed' : 'active'
+            },
+            conversationState: conversationState,
+            conversationHistory: callState.conversationHistory || [],
+            metrics: {
+                totalExchanges: Math.floor((callState.conversationHistory?.length || 0) / 2),
+                averageResponseTime: 'N/A', // Could be calculated if we track timing
+                speechRecognitionAttempts: callState.speechRecognitionAttempts || 0,
+                fallbackResponsesUsed: callState.fallbackResponsesUsed || 0
+            },
+            lastActivity: callState.conversationHistory?.length > 0 ? 
+                callState.conversationHistory[callState.conversationHistory.length - 1].timestamp : 
+                callState.startTime
+        };
+        
+        res.json({
+            callDetails: detailedInfo,
+            timestamp: new Date().toISOString()
+        });
+        
+    } catch (error) {
+        console.error('❌ Error getting call details:', error.message);
+        res.status(500).json({ 
+            error: 'Failed to get call details',
+            callId: req.params.callId,
+            timestamp: new Date().toISOString() 
+        });
+    }
+});
+
 // --- MAIN ACS CALLBACK ENDPOINT ---
 app.post('/api/callbacks', async (req, res) => {
     try {
@@ -864,27 +985,56 @@ async function handleRecognizeCompleted(event) {
 
         let userText = '';
         
-        // CRITICAL FIX: Extract speech from the correct location in the event data
-        // The speech recognition result is in eventData.speechResult.speech, not result.speech
-        if (eventData?.speechResult?.speech && typeof eventData.speechResult.speech === 'string') {
-            userText = eventData.speechResult.speech.trim();
-            console.log(`[STT] 🗣️ User said via speechResult.speech: "${userText}" (Context: ${operationContext})`);
-            console.log(`[STT] 🎯 Confidence: ${eventData.speechResult.confidence || 'N/A'}`);
-        } else if (result?.speech && typeof result.speech === 'string') {
-            userText = result.speech.trim();
-            console.log(`[STT] 🗣️ User said via result.speech: "${userText}" (Context: ${operationContext})`);
-        } else if (result?.speechRecognitionResult?.speech && typeof result.speechRecognitionResult.speech === 'string') {
-            userText = result.speechRecognitionResult.speech.trim();
-            console.log(`[STT] 🗣️ User said via speechRecognitionResult.speech: "${userText}" (Context: ${operationContext})`);
-        } else if (result?.speechRecognitionResult?.text && typeof result.speechRecognitionResult.text === 'string') {
-            userText = result.speechRecognitionResult.text.trim();
-            console.log(`[STT] 🗣️ User said via speechRecognitionResult.text: "${userText}" (Context: ${operationContext})`);
+        // ENHANCED SPEECH EXTRACTION - Try multiple result paths with priority order
+        console.log('🔍 Attempting speech extraction from multiple sources...');
+        
+        const speechSources = [
+            () => eventData?.speechResult?.speech,
+            () => result?.speech,
+            () => result?.speechRecognitionResult?.speech,
+            () => result?.speechRecognitionResult?.text,
+            () => eventData?.result?.speech,
+            () => eventData?.recognitionResult?.speech,
+            () => eventData?.speechToTextResult?.text,
+            () => eventData?.text
+        ];
+        
+        for (let i = 0; i < speechSources.length; i++) {
+            try {
+                const speech = speechSources[i]();
+                if (speech && typeof speech === 'string' && speech.trim()) {
+                    userText = speech.trim();
+                    console.log(`[STT] ✅ Extracted speech from source ${i + 1}: "${userText}" (Context: ${operationContext})`);
+                    if (eventData?.speechResult?.confidence) {
+                        console.log(`[STT] 🎯 Confidence: ${eventData.speechResult.confidence}`);
+                    }
+                    break;
+                }
+            } catch (e) {
+                // Continue to next source
+                console.log(`[STT] � Source ${i + 1} failed, trying next...`);
+            }
         }
         
         if (!userText) {
-            console.log('🔇 No speech detected in any result field, asking user to repeat');
+            console.log('🔇 No speech detected from any source, providing contextual continuation prompt');
             console.log('🔍 Available result fields:', Object.keys(result || {}));
-            await playTextToPatient(callConnection, "I didn't catch that. Could you please repeat what you said?", { operationContext: 'reprompt-playback' });
+            
+            // Enhanced continuation prompt based on conversation state
+            const conversationState = callState.patientBot?.getConversationState();
+            let continuationPrompt = "I didn't catch that. ";
+            
+            if (!conversationState?.triageCompleted) {
+                continuationPrompt += "Could you please tell me how you've been feeling since your discharge?";
+            } else if (!conversationState?.adherenceCompleted) {
+                continuationPrompt += "Are you taking your medication as prescribed?";
+            } else if (!conversationState?.schedulingCompleted) {
+                continuationPrompt += "Would you like to schedule your follow-up appointment?";
+            } else {
+                continuationPrompt += "Is there anything else I can help you with today?";
+            }
+            
+            await playTextToPatient(callConnection, continuationPrompt, { operationContext: 'continuation-prompt' });
             return;
         }
 
@@ -893,13 +1043,48 @@ async function handleRecognizeCompleted(event) {
         let agentReply;
         if (callState.patientBot) {
             try {
+                // PRE-PROCESSING: Check conversation state before message processing
+                const preState = callState.patientBot.getConversationState();
+                console.log(`📈 [PRE] Current Agent: ${preState.activeAgent} | Progress: Triage=${preState.triageCompleted}, Adherence=${preState.adherenceCompleted}, Scheduling=${preState.schedulingCompleted}`);
+                
+                // Enhanced message processing with context
+                const startTime = Date.now();
                 agentReply = await callState.patientBot.processMessage(userText);
-                console.log('✅ PatientBot generated response successfully');
-                const conversationState = callState.patientBot.getConversationState();
-                console.log(`📊 Conversation State: ${conversationState.activeAgent} | Completed: Triage=${conversationState.triageCompleted}, Adherence=${conversationState.adherenceCompleted}, Scheduling=${conversationState.schedulingCompleted}`);
+                const processingTime = Date.now() - startTime;
+                
+                console.log(`✅ PatientBot response generated in ${processingTime}ms`);
+                
+                // POST-PROCESSING: Analyze state changes and agent transitions
+                const postState = callState.patientBot.getConversationState();
+                console.log(`📊 [POST] Current Agent: ${postState.activeAgent} | Progress: Triage=${postState.triageCompleted}, Adherence=${postState.adherenceCompleted}, Scheduling=${postState.schedulingCompleted}`);
+                
+                // Detect and log agent transitions
+                if (preState.activeAgent !== postState.activeAgent) {
+                    console.log(`🔄 AGENT TRANSITION: ${preState.activeAgent} → ${postState.activeAgent}`);
+                    
+                    // Log completion milestones
+                    if (!preState.triageCompleted && postState.triageCompleted) {
+                        console.log('🎯 MILESTONE: Triage assessment completed');
+                    }
+                    if (!preState.adherenceCompleted && postState.adherenceCompleted) {
+                        console.log('🎯 MILESTONE: Medication adherence check completed');
+                    }
+                    if (!preState.schedulingCompleted && postState.schedulingCompleted) {
+                        console.log('🎯 MILESTONE: Appointment scheduling completed');
+                    }
+                }
+                
+                // Enhanced response validation
+                if (!agentReply || typeof agentReply !== 'string' || agentReply.trim().length === 0) {
+                    console.log('⚠️ Empty/invalid response from PatientBot, generating contextual fallback');
+                    agentReply = await generateContextualFallback(userText, callState, postState);
+                }
+                
             } catch (error) {
                 console.error('❌ Error generating PatientBot response:', error.message);
-                agentReply = await generateFallbackResponse(userText, callState);
+                console.error('📊 Error stack:', error.stack);
+                const currentState = callState.patientBot?.getConversationState();
+                agentReply = await generateContextualFallback(userText, callState, currentState);
             }
         } else {
             console.log('⚠️ Using fallback response - PatientBot not available');
@@ -962,6 +1147,71 @@ async function generateFallbackResponse(userText, callState) {
     } catch (error) {
         console.error('❌ Error in generateFallbackResponse:', error.message);
         return "I'm here to help with your healthcare. How can I assist you today?";
+    }
+}
+
+// Enhanced contextual fallback based on conversation state
+async function generateContextualFallback(userText, callState, conversationState) {
+    try {
+        console.log('🔄 Generating contextual fallback response based on conversation state');
+        
+        // Track fallback usage
+        if (callState) {
+            callState.fallbackResponsesUsed = (callState.fallbackResponsesUsed || 0) + 1;
+            callState.lastActivity = new Date();
+        }
+        
+        const lowerText = userText.toLowerCase();
+        
+        // If we have conversation state, provide contextual guidance
+        if (conversationState) {
+            // Triage phase fallbacks
+            if (!conversationState.triageCompleted && conversationState.activeAgent === 'triage') {
+                if (lowerText.includes('pain') || lowerText.includes('hurt') || lowerText.includes('feel')) {
+                    return "I understand you mentioned pain. Can you help me understand more specifically - where does it hurt, and on a scale of 1 to 10, how would you rate the pain level?";
+                }
+                if (lowerText.includes('good') || lowerText.includes('fine') || lowerText.includes('ok')) {
+                    return "I'm glad to hear you're feeling okay. Let me ask a few specific questions about your recovery. Have you experienced any unusual symptoms like dizziness, nausea, or difficulty sleeping?";
+                }
+                return "I want to make sure I understand how you're recovering. Can you tell me about any symptoms you've experienced since your discharge - things like pain, nausea, difficulty sleeping, or any other concerns?";
+            }
+            
+            // Adherence phase fallbacks
+            if (conversationState.triageCompleted && !conversationState.adherenceCompleted && conversationState.activeAgent === 'adherence') {
+                if (lowerText.includes('yes') || lowerText.includes('taking') || lowerText.includes('medication')) {
+                    return "That's great that you're taking your medications. Can you tell me specifically about any challenges you've had with timing, side effects, or remembering to take them?";
+                }
+                if (lowerText.includes('no') || lowerText.includes('forgot') || lowerText.includes('missed')) {
+                    return "I understand medication schedules can be challenging. Can you tell me which medications you've had trouble with, and what's making it difficult to take them as prescribed?";
+                }
+                return "Let's talk about your medication routine. Are you taking all your prescribed medications as directed? Have you experienced any side effects or had trouble remembering doses?";
+            }
+            
+            // Scheduling phase fallbacks
+            if (conversationState.triageCompleted && conversationState.adherenceCompleted && !conversationState.schedulingCompleted && conversationState.activeAgent === 'scheduling') {
+                if (lowerText.includes('yes') || lowerText.includes('schedule') || lowerText.includes('appointment')) {
+                    return "Perfect! I can help you schedule that follow-up appointment. Do you have a preferred day of the week or time of day that works best for you?";
+                }
+                if (lowerText.includes('no') || lowerText.includes('later') || lowerText.includes('not now')) {
+                    return "That's perfectly fine. Just remember that follow-up appointments are important for your recovery. Is there anything else I can help you with today?";
+                }
+                return "Based on our conversation, I'd recommend scheduling a follow-up appointment with your healthcare provider. Would you like me to help you find an available time?";
+            }
+        }
+        
+        // Generic contextual fallback if no specific state match
+        const genericResponses = [
+            "I want to make sure I'm helping you effectively. Could you please rephrase that or let me know what specific aspect of your healthcare you'd like to discuss?",
+            "I'm here to help with your recovery. Would you like to talk about how you're feeling, your medications, or scheduling an appointment?",
+            "Let me make sure I understand what you need. Are you calling about symptoms, medication questions, or to schedule a follow-up?"
+        ];
+        
+        const randomIndex = Math.floor(Math.random() * genericResponses.length);
+        return genericResponses[randomIndex];
+        
+    } catch (error) {
+        console.error('❌ Error in generateContextualFallback:', error.message);
+        return "I'm here to help with your healthcare needs. How can I assist you today?";
     }
 }
 
@@ -1171,20 +1421,20 @@ async function startSpeechRecognition(callConnection) {
             }
         }
 
-        // CRITICAL FIX: The SDK requires a 'kind' property to determine recognition type
+        // ENHANCED SPEECH RECOGNITION: Optimized for natural conversation flow
         const recognizeOptions = {
-            kind: 'callMediaRecognizeSpeechOptions',  // This is the missing required property!
-            endSilenceTimeoutInSeconds: 3,  // Increased from 2 to 3 seconds - give more time for user to finish
-            initialSilenceTimeoutInSeconds: 8,  // Increased from 5 to 8 seconds - more time for user to start speaking
+            kind: 'callMediaRecognizeSpeechOptions',
+            endSilenceTimeoutInSeconds: 4,  // Allow 4 seconds for natural pauses
+            initialSilenceTimeoutInSeconds: 10, // Give users 10 seconds to start speaking
             speechLanguage: 'en-US',
             operationContext: `speech-${callConnectionId}-${Date.now()}`,
-            playPrompt: undefined,  // Explicitly set as we're not using a prompt
+            playPrompt: undefined,
             
-            // ENHANCED SPEECH RECOGNITION SETTINGS
-            interruptPromptAndCallWaitForSpeech: false,  // Don't interrupt for better audio quality
+            // ENHANCED SETTINGS FOR NATURAL CONVERSATION
+            interruptPromptAndCallWaitForSpeech: false,
             speechToTextOptions: {
-                endSilenceTimeoutInMs: 3000,  // 3 seconds of silence to end recognition
-                segmentationSilenceTimeoutInMs: 500,  // 0.5 seconds to segment speech
+                endSilenceTimeoutInMs: 4000,  // 4 seconds for natural conversation flow
+                segmentationSilenceTimeoutInMs: 800,  // Allow for natural speech patterns
             }
         };
 
@@ -1198,6 +1448,13 @@ async function startSpeechRecognition(callConnection) {
         
         // Verify the fix
         console.log(`✅ SDK validation - kind property:`, recognizeOptions.kind);
+
+        // Track speech recognition attempt
+        if (callState) {
+            callState.speechRecognitionAttempts = (callState.speechRecognitionAttempts || 0) + 1;
+            callState.lastActivity = new Date();
+            console.log(`📊 Speech recognition attempt #${callState.speechRecognitionAttempts} for call ${callConnectionId}`);
+        }
 
         try {
             // Call startRecognizing - with or without specific participant targeting
@@ -1397,7 +1654,11 @@ app.post('/api/trigger-call', async (req, res) => {
             medications,
             phoneNumber,
             conversationHistory: [],
-            startTime: new Date().toISOString()
+            startTime: new Date(),
+            // Conversation tracking metrics
+            speechRecognitionAttempts: 0,
+            fallbackResponsesUsed: 0,
+            lastActivity: new Date()
         });
 
         console.log(`✅ Call initiated successfully! Call ID: ${callConnectionId}`);
@@ -1470,6 +1731,192 @@ app.listen(PORT, () => {
     console.log(`   ✅ Speech Service: ${SPEECH_KEY ? 'Configured' : '❌ Missing'}`);
     console.log(`   ✅ Speech Region: ${SPEECH_REGION}`);
     console.log(`   ✅ Cosmos DB: ${cosmosDbService ? 'Initialized' : '❌ Failed'}`);
+});
+
+// --- CONVERSATION MONITORING DASHBOARD HTML ---
+app.get('/dashboard', (req, res) => {
+    const dashboardHTML = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voice Bot Conversation Dashboard</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 20px; background-color: #f5f5f5; }
+        .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 10px; margin-bottom: 20px; }
+        .header h1 { margin: 0; font-size: 28px; }
+        .header p { margin: 5px 0 0 0; opacity: 0.9; }
+        .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 30px; }
+        .summary-card { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); text-align: center; }
+        .summary-card h3 { margin: 0 0 10px 0; color: #333; font-size: 14px; text-transform: uppercase; }
+        .summary-card .number { font-size: 32px; font-weight: bold; color: #667eea; margin: 0; }
+        .conversations { background: white; border-radius: 10px; padding: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .conversations h2 { margin-top: 0; color: #333; }
+        .conversation-card { border: 1px solid #eee; border-radius: 8px; padding: 15px; margin-bottom: 15px; background: #fafafa; }
+        .conversation-header { display: flex; justify-content: between; align-items: center; margin-bottom: 10px; }
+        .patient-name { font-weight: bold; color: #333; }
+        .call-duration { color: #666; font-size: 14px; }
+        .progress-bar { background: #e0e0e0; height: 20px; border-radius: 10px; overflow: hidden; margin: 10px 0; }
+        .progress-fill { height: 100%; display: flex; }
+        .progress-triage { background: #4CAF50; }
+        .progress-adherence { background: #2196F3; }
+        .progress-scheduling { background: #FF9800; }
+        .progress-complete { background: #9C27B0; }
+        .agent-status { display: inline-block; padding: 4px 8px; border-radius: 12px; font-size: 12px; font-weight: bold; }
+        .agent-triage { background: #e8f5e8; color: #2e7d32; }
+        .agent-adherence { background: #e3f2fd; color: #1565c0; }
+        .agent-scheduling { background: #fff3e0; color: #ef6c00; }
+        .agent-complete { background: #f3e5f5; color: #7b1fa2; }
+        .refresh-btn { background: #667eea; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; margin-bottom: 20px; }
+        .refresh-btn:hover { background: #5a6fd8; }
+        .no-calls { text-align: center; color: #666; padding: 40px; }
+        .timestamp { color: #999; font-size: 12px; margin-top: 10px; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🤖 Voice Bot Conversation Dashboard</h1>
+        <p>Real-time monitoring of patient conversations</p>
+    </div>
+
+    <button class="refresh-btn" onclick="loadDashboard()">🔄 Refresh Dashboard</button>
+    
+    <div class="summary-grid" id="summary-grid">
+        <!-- Summary cards will be loaded here -->
+    </div>
+
+    <div class="conversations">
+        <h2>📞 Active Conversations</h2>
+        <div id="conversations-list">
+            <!-- Conversations will be loaded here -->
+        </div>
+    </div>
+
+    <script>
+        function formatDuration(seconds) {
+            const mins = Math.floor(seconds / 60);
+            const secs = seconds % 60;
+            return mins + ':' + secs.toString().padStart(2, '0');
+        }
+
+        function getProgressPercentage(state) {
+            if (!state) return 0;
+            let progress = 0;
+            if (state.triageCompleted) progress += 33;
+            if (state.adherenceCompleted) progress += 33;
+            if (state.schedulingCompleted) progress += 34;
+            return progress;
+        }
+
+        function getAgentStatusClass(agent) {
+            const classes = {
+                'triage': 'agent-triage',
+                'adherence': 'agent-adherence', 
+                'scheduling': 'agent-scheduling',
+                'complete': 'agent-complete'
+            };
+            return classes[agent] || 'agent-triage';
+        }
+
+        function renderSummary(summary) {
+            const summaryGrid = document.getElementById('summary-grid');
+            summaryGrid.innerHTML = \`
+                <div class="summary-card">
+                    <h3>Active Calls</h3>
+                    <div class="number">\${summary.totalActiveCalls}</div>
+                </div>
+                <div class="summary-card">
+                    <h3>In Progress</h3>
+                    <div class="number">\${summary.conversationsInProgress}</div>
+                </div>
+                <div class="summary-card">
+                    <h3>Triage Complete</h3>
+                    <div class="number">\${summary.triageCompleted}</div>
+                </div>
+                <div class="summary-card">
+                    <h3>Adherence Complete</h3>
+                    <div class="number">\${summary.adherenceCompleted}</div>
+                </div>
+                <div class="summary-card">
+                    <h3>Scheduling Complete</h3>
+                    <div class="number">\${summary.schedulingCompleted}</div>
+                </div>
+                <div class="summary-card">
+                    <h3>Calls Completed</h3>
+                    <div class="number">\${summary.callsCompleted}</div>
+                </div>
+            \`;
+        }
+
+        function renderConversations(conversations) {
+            const conversationsList = document.getElementById('conversations-list');
+            
+            if (conversations.length === 0) {
+                conversationsList.innerHTML = '<div class="no-calls">No active conversations</div>';
+                return;
+            }
+
+            conversationsList.innerHTML = conversations.map(conv => {
+                const progress = getProgressPercentage(conv.currentState);
+                const agentClass = getAgentStatusClass(conv.currentState?.activeAgent);
+                
+                return \`
+                    <div class="conversation-card">
+                        <div class="conversation-header">
+                            <span class="patient-name">👤 \${conv.patientName} (\${conv.patientId})</span>
+                            <span class="call-duration">⏱️ \${formatDuration(conv.duration)}</span>
+                        </div>
+                        <div class="agent-status \${agentClass}">
+                            \${conv.currentState?.activeAgent || 'initializing'}
+                        </div>
+                        <div class="progress-bar">
+                            <div class="progress-fill" style="width: \${progress}%">
+                                \${conv.currentState?.triageCompleted ? '<div class="progress-triage" style="width: 33.33%"></div>' : ''}
+                                \${conv.currentState?.adherenceCompleted ? '<div class="progress-adherence" style="width: 33.33%"></div>' : ''}
+                                \${conv.currentState?.schedulingCompleted ? '<div class="progress-scheduling" style="width: 33.33%"></div>' : ''}
+                            </div>
+                        </div>
+                        <div style="font-size: 12px; color: #666;">
+                            💬 \${conv.conversationHistory} exchanges | 
+                            📞 Call: \${conv.callId.substring(0, 8)}...
+                        </div>
+                    </div>
+                \`;
+            }).join('');
+        }
+
+        async function loadDashboard() {
+            try {
+                const response = await fetch('/api/conversation-status');
+                const data = await response.json();
+                
+                renderSummary(data.summary);
+                renderConversations(data.activeConversations);
+                
+                // Add timestamp
+                const timestamp = new Date().toLocaleString();
+                document.getElementById('conversations-list').innerHTML += 
+                    \`<div class="timestamp">Last updated: \${timestamp}</div>\`;
+                
+            } catch (error) {
+                console.error('Failed to load dashboard:', error);
+                document.getElementById('conversations-list').innerHTML = 
+                    '<div class="no-calls">❌ Failed to load conversation data</div>';
+            }
+        }
+
+        // Load dashboard on page load
+        loadDashboard();
+        
+        // Auto-refresh every 10 seconds
+        setInterval(loadDashboard, 10000);
+    </script>
+</body>
+</html>
+    `;
+    
+    res.send(dashboardHTML);
 });
 
 module.exports = app;

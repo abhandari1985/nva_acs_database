@@ -73,16 +73,22 @@
     "followUpAppointment": {
       "scheduled": false,
       "appointmentDateTime": null,
-      "confirmationSent": false
+      "confirmationSent": false,
+      "appointmentCreated": true,
+      "createdDate": "2025-07-24T12:48:46.963Z",
+      "details": "Perfect! I've successfully booked a real appointment for Priya Kapoor on Saturday, July 26, 2025 at 2:00 PM. Event ID: AAMkAGNhYmEzMjE4LTc0OWUtNGY5Mi1hZjdiLTIxODdmZWY4MTEyNwBGAAAAAABGHIAYtyC3RIY-cbqCAWZMBwAzX98Rj5kfRI47cGypPJYuAAAAAAENAAAzX98Rj5kfRI47cGypPJYuAAACy48EAAA="
     },
     "followUpCall": {
-      "callInitiated": false,
+      "callInitiated": true,
       "callCompleted": false,
-      "callTimestamp": null,
+      "callTimestamp": "2025-07-24T12:48:47.194Z",
       "adherenceAnswers": {
         "filledPrescription": null,
         "missedDoses": null,
-        "sideEffects": null
+        "sideEffects": [],
+        "adherenceScore": 7,
+        "concerns": [],
+        "lastUpdated": "2025-07-24T12:47:16.343Z"
       },
       "callTranscriptUrl": null
     },
