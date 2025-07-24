@@ -3,6 +3,24 @@
 // Implements secure authentication, error handling, and proper Azure SDK patterns
 
 const express = require('express');
+// Global error handlers for better debugging
+process.on('uncaughtException', (error) => {
+    console.error('🚨 Uncaught Exception:', error.message);
+    console.error('Stack trace:', error.stack);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('🚨 Unhandled Rejection at:', promise);
+    console.error('Reason:', reason);
+});
+
+// Enhanced logging for startup
+console.log('🚀 Voice Bot Server Starting...');
+console.log(`📍 Environment: ${process.env.NODE_ENV || 'development'}`);
+console.log(`🔗 ACS Connection String: ${process.env.AZURE_COMMUNICATION_SERVICES_CONNECTION_STRING ? 'Configured' : 'MISSING'}`);
+console.log(`🗄️ CosmosDB Endpoint: ${process.env.COSMOSDB_ENDPOINT ? 'Configured' : 'MISSING'}`);
+console.log(`🎤 Speech Services Key: ${process.env.AZURE_SPEECH_SERVICES_KEY ? 'Configured' : 'MISSING'}`);
+
 const { CallAutomationClient } = require('@azure/communication-call-automation');
 const { DefaultAzureCredential } = require('@azure/identity');
 const { SpeechConfig, SpeechSynthesizer, AudioConfig } = require('microsoft-cognitiveservices-speech-sdk');
@@ -72,14 +90,101 @@ try {
 // This will hold the state of active calls with proper cleanup
 const callStates = new Map();
 
+// Map to track call ID relationships (both Event Grid and Direct ACS webhook IDs)
+const callIdMapping = new Map();
+
 // Cleanup call state after a specified timeout to prevent memory leaks
 const CALL_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
+/**
+ * Normalize call connection IDs to handle both Event Grid and direct ACS webhook formats
+ * ACS sometimes sends different call IDs for the same call in different event sources
+ */
+function normalizeCallConnectionId(callId) {
+    if (!callId) return null;
+    
+    // Check if we've seen this ID before and have a mapping
+    if (callIdMapping.has(callId)) {
+        const normalizedId = callIdMapping.get(callId);
+        console.log(`🔗 Using mapped call ID: ${callId} -> ${normalizedId}`);
+        return normalizedId;
+    }
+    
+    // For new IDs, check if it might be an encoded version
+    if (callId.length > 50 && callId.includes('aHR0')) {
+        // This looks like a base64 encoded URL, try to find a simpler ID
+        for (const [existingId, normalizedId] of callIdMapping.entries()) {
+            if (existingId.length < 50) {
+                // Map the long ID to the shorter one
+                callIdMapping.set(callId, normalizedId);
+                console.log(`🔗 Created call ID mapping: ${callId.substring(0, 30)}... -> ${normalizedId}`);
+                return normalizedId;
+            }
+        }
+    }
+    
+    // For shorter IDs, check if we have a longer version already mapped
+    if (callId.length < 50) {
+        for (const [existingId, normalizedId] of callIdMapping.entries()) {
+            if (normalizedId === callId) {
+                // This ID is already the normalized version
+                return callId;
+            }
+        }
+        
+        // This is a new short ID, use it as the normalized version
+        callIdMapping.set(callId, callId);
+        return callId;
+    }
+    
+    // If no mapping exists, create one using this ID as the normalized version
+    callIdMapping.set(callId, callId);
+    return callId;
+}
+
+// Enhanced call state structure
+function createCallState(patient, patientBot) {
+    return {
+        patient: patient,
+        patientBot: patientBot,
+        conversationHistory: [],
+        callStartTime: new Date(),
+        status: 'initializing',
+        // Event tracking for better synchronization
+        events: {
+            callConnected: false,
+            callStarted: false,
+            participantAdded: false,
+            greetingPlayed: false
+        },
+        participants: new Set(),
+        timeoutId: null
+    };
+}
+
 function cleanupCallState(callConnectionId) {
-    if (callStates.has(callConnectionId)) {
+    // Handle cleanup for both the normalized ID and any mapped IDs
+    const normalizedId = normalizeCallConnectionId(callConnectionId);
+    
+    if (callStates.has(normalizedId)) {
+        clearTimeout(callStates.get(normalizedId).timeoutId);
+        callStates.delete(normalizedId);
+        console.log(`🧹 Cleaned up state for call: ${normalizedId}`);
+    }
+    
+    // Also cleanup the original ID if different
+    if (callConnectionId !== normalizedId && callStates.has(callConnectionId)) {
         clearTimeout(callStates.get(callConnectionId).timeoutId);
         callStates.delete(callConnectionId);
-        console.log(`🧹 Cleaned up state for call: ${callConnectionId}`);
+        console.log(`🧹 Cleaned up state for original call ID: ${callConnectionId}`);
+    }
+    
+    // Clean up call ID mappings
+    for (const [key, value] of callIdMapping.entries()) {
+        if (key === callConnectionId || value === callConnectionId || 
+            key === normalizedId || value === normalizedId) {
+            callIdMapping.delete(key);
+        }
     }
 }
 
@@ -226,15 +331,19 @@ app.post('/api/callbacks', async (req, res) => {
                 }
             }
             
+            // IMPORTANT: Normalize call connection IDs to handle both formats
+            // ACS sometimes sends different IDs for the same call in different events
+            const normalizedCallId = normalizeCallConnectionId(callConnectionId);
+            
             if (!eventType) {
                 console.warn('⚠️ Received event without type:', event);
                 continue;
             }
 
-            console.log(`[ACS Event] 📞 ${eventType} for call ${callConnectionId || 'UNKNOWN'}`);
+            console.log(`[ACS Event] 📞 ${eventType} for call ${normalizedCallId || 'UNKNOWN'}`);
             
             // Skip processing if we still don't have a callConnectionId
-            if (!callConnectionId) {
+            if (!normalizedCallId) {
                 console.warn(`⚠️ Skipping event ${eventType} - no callConnectionId found`);
                 continue;
             }
@@ -243,7 +352,8 @@ app.post('/api/callbacks', async (req, res) => {
             const normalizedEvent = {
                 ...event,
                 type: eventType,
-                callConnectionId: callConnectionId
+                callConnectionId: normalizedCallId,
+                originalCallConnectionId: callConnectionId // Keep original for debugging
             };
             
             try {
@@ -267,8 +377,13 @@ async function processAcsEvent(event) {
     
     switch (type) {
         case "Microsoft.Communication.CallConnected":
-        case "Microsoft.Communication.CallStarted":
             await handleCallConnected(event);
+            break;
+        case "Microsoft.Communication.CallStarted":
+            await handleCallStarted(event);
+            break;
+        case "Microsoft.Communication.CallParticipantAdded":
+            await handleCallParticipantAdded(event);
             break;
         case "Microsoft.Communication.RecognizeCompleted":
             await handleRecognizeCompleted(event);
@@ -282,12 +397,15 @@ async function processAcsEvent(event) {
         case "Microsoft.Communication.PlayFailed":
             await handlePlayFailed(event);
             break;
+        case "Microsoft.Communication.PlayStarted":
+            await handlePlayStarted(event);
+            break;
         case "Microsoft.Communication.CallDisconnected":
         case "Microsoft.Communication.CallEnded":
             await handleCallDisconnected(event);
             break;
         case "Microsoft.Communication.ParticipantsUpdated":
-            console.log(`ℹ️ Participants updated for call: ${callConnectionId}`);
+            await handleParticipantsUpdated(event);
             break;
         default:
             console.log(`ℹ️ Unhandled event type: ${type}`);
@@ -296,16 +414,39 @@ async function processAcsEvent(event) {
 
 // --- CALL EVENT HANDLERS ---
 async function handleCallConnected(event) {
-    const { callConnectionId } = event;
+    const { callConnectionId, originalCallConnectionId } = event;
     
     try {
-        const callConnection = callClient.getCallConnection(callConnectionId);
+        console.log(`📞 Call connected event for: ${callConnectionId}`);
+        if (originalCallConnectionId && originalCallConnectionId !== callConnectionId) {
+            console.log(`🔗 Original call ID: ${originalCallConnectionId}`);
+        }
+        
+        // Create or update call ID mapping for future events
+        if (originalCallConnectionId && originalCallConnectionId !== callConnectionId) {
+            callIdMapping.set(originalCallConnectionId, callConnectionId);
+            callIdMapping.set(callConnectionId, callConnectionId);
+        }
+        
+        // CRITICAL: Get the existing state and ensure we use the SAME reference
+        let existingCallState = callStates.get(callConnectionId);
+        
+        // Also check if there's context stored under the original ID
+        if (!existingCallState && originalCallConnectionId) {
+            existingCallState = callStates.get(originalCallConnectionId);
+            if (existingCallState) {
+                // Move the state to the normalized ID
+                callStates.delete(originalCallConnectionId);
+                callStates.set(callConnectionId, existingCallState);
+                console.log(`🔄 Moved call state from ${originalCallConnectionId} to ${callConnectionId}`);
+            }
+        }
         
         // Get patient data from the stored call context (from trigger-call endpoint)
-        const storedCallContext = callStates.get(callConnectionId);
+        let storedCallContext = existingCallState;
         
         let patient;
-        if (storedCallContext) {
+        if (storedCallContext && storedCallContext.patientName) {
             // Use the patient data that was passed when the call was triggered
             patient = {
                 patientName: storedCallContext.patientName || 'Test Patient',
@@ -326,7 +467,6 @@ async function handleCallConnected(event) {
         
         if (!patient) {
             console.error('❌ Call connected but could not find patient data - using default');
-            // Instead of hanging up, use default patient data for testing
             patient = {
                 patientName: 'Test Patient',
                 phoneNumber: '+919158066045',
@@ -341,51 +481,294 @@ async function handleCallConnected(event) {
             };
         }
 
-        // Initialize call state with proper timeout management
-        callStates.set(callConnectionId, {
-            patient: patient,
-            conversationHistory: [],
-            callStartTime: new Date(),
-            status: 'connected'
-        });
-        
         // Create PatientBot instance for this specific call
         const patientBot = initializePatientBot(patient, cosmosDbService);
         
-        // Update call state to include PatientBot instance
-        callStates.set(callConnectionId, {
-            patient: patient,
-            patientBot: patientBot,
-            conversationHistory: [],
-            callStartTime: new Date(),
-            status: 'connected'
-        });
+        // CRITICAL: Always use getOrCreateCallState to ensure we work with the same state object
+        const callState = getOrCreateCallState(callConnectionId, 'CallConnected');
         
-        setCallTimeout(callConnectionId);
-
-        console.log(`✅ Call connected for patient: ${patient.patientName} (${patient.phoneNumber})`);
-
-        // Generate personalized greeting using PatientBot
-        let greeting;
-        if (patientBot) {
-            try {
-                greeting = await patientBot.processMessage('__START_CALL__');
-                console.log('✅ PatientBot generated greeting successfully');
-            } catch (error) {
-                console.error('❌ Error generating PatientBot greeting:', error.message);
-                // Fallback to basic greeting
-                greeting = `Hello ${patient.patientName}. This is Alex, your virtual healthcare assistant from the post-discharge care team, calling on behalf of Dr. ${patient.doctorName}. Is now a good time to talk briefly about your new medication protocol?`;
-            }
-        } else {
-            // Fallback greeting when PatientBot is not available
-            greeting = `Hello ${patient.patientName}. This is Alex, your virtual healthcare assistant from the post-discharge care team, calling on behalf of Dr. ${patient.doctorName}. Is now a good time to talk briefly about your new medication protocol?`;
+        console.log(`🔄 Updating call state with patient data (preserving ALL existing event flags)`);
+        
+        // Preserve ALL existing event flags before updating
+        const existingEvents = { ...callState.events };
+        
+        // Update the state object directly with patient data
+        callState.patient = patient;
+        callState.patientBot = patientBot;
+        callState.events.callConnected = true;
+        callState.status = 'connected';
+        
+        // CRITICAL: Preserve ALL other event flags that might have been set by earlier events
+        callState.events.callStarted = existingEvents.callStarted || false;
+        callState.events.participantAdded = existingEvents.participantAdded || false;
+        callState.events.greetingPlayed = existingEvents.greetingPlayed || false;
+        
+        console.log(`🔧 Preserved and updated event flags: Started=${callState.events.callStarted}, Participant=${callState.events.participantAdded}`);
+        
+        // Ensure timeout is set if not already
+        if (!callState.timeoutId) {
+            setCallTimeout(callConnectionId);
         }
+
+        console.log(`✅ Call state initialized for patient: ${patient.patientName} (${patient.phoneNumber})`);
+        console.log(`🔄 Call state tracking ID: ${callConnectionId}`);
         
-        await playTextToPatient(callConnection, greeting, true);
+        // Check if we can start the greeting now (might be ready if other events already arrived)
+        await checkAndStartGreeting(callConnectionId);
         
     } catch (error) {
         console.error('❌ Error in handleCallConnected:', error.message);
         cleanupCallState(callConnectionId);
+    }
+}
+
+/**
+ * Get or create call state - ensures we always work with the same state object
+ */
+function getOrCreateCallState(callConnectionId, eventName) {
+    let callState = callStates.get(callConnectionId);
+    
+    if (!callState) {
+        console.log(`⚠️ No call state found for ${eventName}, creating basic state for: ${callConnectionId}`);
+        
+        // Create a temporary call state to handle events that arrive before CallConnected
+        const tempCallState = {
+            patient: null, // Will be filled when CallConnected arrives
+            patientBot: null,
+            conversationHistory: [],
+            callStartTime: new Date(),
+            status: 'initializing',
+            events: {
+                callConnected: false,
+                callStarted: false,
+                participantAdded: false,
+                greetingPlayed: false
+            },
+            participants: new Set(),
+            timeoutId: null
+        };
+        
+        callStates.set(callConnectionId, tempCallState);
+        setCallTimeout(callConnectionId);
+        callState = tempCallState;
+        
+        console.log(`✅ Temporary call state created for early ${eventName} event`);
+    } else {
+        console.log(`✅ Found existing call state for ${eventName} event`);
+    }
+    
+    return callState;
+}
+
+async function handleCallStarted(event) {
+    const { callConnectionId } = event;
+    console.log(`🚀 Call started event for: ${callConnectionId}`);
+    
+    // Wait a brief moment for CallConnected to finish if it's in progress
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    // Get or create call state - ensures we work with the same object reference
+    const callState = getOrCreateCallState(callConnectionId, 'CallStarted');
+    
+    // Update the event flag on the SAME state object
+    callState.events.callStarted = true;
+    callState.status = 'started';
+    
+    console.log(`✅ Call started for patient: ${callState.patient?.patientName || 'Unknown'}`);
+    console.log(`🔧 Updated callStarted flag to: ${callState.events.callStarted}`);
+    
+    // Check if we can start the greeting now (if patient data is available)
+    if (callState.patient) {
+        console.log(`🎯 CallStarted: Patient data available, checking greeting conditions`);
+        await checkAndStartGreeting(callConnectionId);
+    } else {
+        console.log(`⏳ CallStarted processed but waiting for patient data from CallConnected`);
+    }
+}
+
+async function handleCallParticipantAdded(event) {
+    const { callConnectionId, data } = event;
+    console.log(`👤 Participant added to call: ${callConnectionId}`);
+    
+    // Use atomic state management to ensure we work with the same state object
+    const callState = getOrCreateCallState(callConnectionId, 'CallParticipantAdded');
+    
+    // Process participant data
+    if (data && data.participant) {
+        const participantId = data.participant.identifier?.phoneNumber?.value || data.participant.identifier?.rawId;
+        if (participantId) {
+            callState.participants.add(participantId);
+            console.log(`✅ Participant ${participantId} added to call state`);
+            
+            // If we have patient data, do phone number matching
+            if (callState.patient) {
+                const patientPhone = callState.patient.phoneNumber;
+                const normalizedPatientPhone = patientPhone?.replace(/[\s\-\(\)]/g, '');
+                const normalizedParticipantId = participantId.replace(/[\s\-\(\)]/g, '');
+                
+                console.log(`🔍 Comparing phones: Patient=${normalizedPatientPhone}, Participant=${normalizedParticipantId}`);
+                
+                // Check if this is the patient participant (flexible matching)
+                if (normalizedParticipantId === normalizedPatientPhone || 
+                    normalizedParticipantId.endsWith(normalizedPatientPhone.slice(-10)) ||
+                    normalizedPatientPhone.endsWith(normalizedParticipantId.slice(-10))) {
+                    
+                    callState.events.participantAdded = true;
+                    console.log(`🎯 Patient participant confirmed: ${participantId}`);
+                    
+                    // Check if we can start the greeting now
+                    await checkAndStartGreeting(callConnectionId);
+                } else {
+                    console.log(`ℹ️ Non-patient participant: ${participantId}`);
+                }
+            } else {
+                // No patient data yet, assume this is the patient for now
+                callState.events.participantAdded = true;
+                console.log(`🔄 Participant added but no patient data yet - assuming it's the patient`);
+            }
+        } else {
+            console.log(`⚠️ No participant ID found in participant data`);
+        }
+    } else {
+        console.log(`⚠️ No participant data in CallParticipantAdded event`);
+        
+        // As a fallback, if we don't have participant data but got the event,
+        // assume it's the patient joining
+        if (!callState.events.participantAdded) {
+            console.log(`🔄 Fallback: Assuming patient joined based on CallParticipantAdded event`);
+            callState.events.participantAdded = true;
+            
+            // Check if we can start the greeting now (if patient data is available)
+            if (callState.patient) {
+                await checkAndStartGreeting(callConnectionId);
+            }
+        }
+    }
+}
+
+async function handleParticipantsUpdated(event) {
+    const { callConnectionId } = event;
+    console.log(`📋 Participants updated for call: ${callConnectionId}`);
+    
+    // Wait a brief moment for CallConnected to finish if it's in progress
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    // Get or create call state - ensures we work with the same object reference
+    const callState = getOrCreateCallState(callConnectionId, 'ParticipantsUpdated');
+    
+    // Use this as a fallback to mark participant as added if we missed the specific event
+    if (!callState.events.participantAdded) {
+        callState.events.participantAdded = true;
+        console.log(`✅ Participant marked as added via ParticipantsUpdated event`);
+        
+        // Check if we can start the greeting now (if patient data is available)
+        if (callState.patient) {
+            console.log(`🎯 ParticipantsUpdated: Patient data available, checking greeting conditions`);
+            await checkAndStartGreeting(callConnectionId);
+        } else {
+            console.log(`⏳ ParticipantsUpdated processed but waiting for patient data from CallConnected`);
+        }
+    } else {
+        console.log(`ℹ️ Participant already marked as added, no action needed`);
+    }
+}
+
+async function handlePlayStarted(event) {
+    const { callConnectionId } = event;
+    console.log(`🔊 Audio playback started for call: ${callConnectionId}`);
+}
+
+// Central function to check if all conditions are met to start the greeting
+async function checkAndStartGreeting(callConnectionId) {
+    const callState = callStates.get(callConnectionId);
+    
+    if (!callState) {
+        console.log(`⚠️ No call state found for ${callConnectionId} - cannot start greeting`);
+        console.log(`🔍 Available call states: ${Array.from(callStates.keys()).join(', ')}`);
+        return;
+    }
+    
+    if (callState.events.greetingPlayed) {
+        console.log(`✅ Greeting already played for call ${callConnectionId}`);
+        return; // Already played
+    }
+    
+    const { callConnected, callStarted, participantAdded } = callState.events;
+    
+    console.log(`🔍 Event status for call ${callConnectionId}:`);
+    console.log(`   📞 Connected: ${callConnected}`);
+    console.log(`   🚀 Started: ${callStarted}`);
+    console.log(`   👤 Participant: ${participantAdded}`);
+    console.log(`   🎤 Greeting played: ${callState.events.greetingPlayed}`);
+    console.log(`   👨‍⚕️ Patient: ${callState.patient?.patientName || 'Unknown'}`);
+    console.log(`   📊 Status: ${callState.status}`);
+    console.log(`   🎯 Participants count: ${callState.participants?.size || 0}`);
+    
+    // Check if all required events have occurred
+    if (callConnected && callStarted && participantAdded) {
+        console.log(`🎉 All events ready for call ${callConnectionId}, starting greeting...`);
+        
+        try {
+            // Mark greeting as being played to prevent duplicates
+            callState.events.greetingPlayed = true;
+            
+            // Reduced delay for faster response time
+            setTimeout(async () => {
+                await startGreeting(callConnectionId);
+            }, 500); // Reduced from 750ms to 500ms for faster response
+            
+        } catch (error) {
+            console.error('❌ Error starting greeting:', error.message);
+            callState.events.greetingPlayed = false; // Reset on error
+        }
+    } else {
+        console.log(`⏳ Waiting for more events. Connected: ${callConnected}, Started: ${callStarted}, Participant: ${participantAdded}`);
+    }
+}
+
+async function startGreeting(callConnectionId) {
+    try {
+        const callConnection = callClient.getCallConnection(callConnectionId);
+        const callState = callStates.get(callConnectionId);
+        
+        if (!callState) {
+            console.error(`❌ No call state found when starting greeting for: ${callConnectionId}`);
+            return;
+        }
+        
+        console.log(`🎤 Starting greeting for patient: ${callState.patient.patientName}`);
+        console.log(`📞 Call connection ID: ${callConnection.callConnectionId}`);
+        
+        // Generate personalized greeting using PatientBot
+        let greeting;
+        if (callState.patientBot) {
+            try {
+                greeting = await callState.patientBot.processMessage('__START_CALL__');
+                console.log('✅ PatientBot generated greeting successfully');
+                console.log(`📝 Generated greeting: "${greeting}"`);
+            } catch (error) {
+                console.error('❌ Error generating PatientBot greeting:', error.message);
+                // Fallback to basic greeting
+                greeting = `Hello ${callState.patient.patientName}. This is Jenny, your virtual healthcare assistant from the post-discharge care team, calling on behalf of Dr. ${callState.patient.doctorName}. Is now a good time to talk briefly about your medication?`;
+            }
+        } else {
+            // Fallback greeting when PatientBot is not available
+            greeting = `Hello ${callState.patient.patientName}. This is Jenny, your virtual healthcare assistant from the post-discharge care team, calling on behalf of Dr. ${callState.patient.doctorName}. Is now a good time to talk briefly about your medication?`;
+        }
+        
+        console.log(`🎙️ About to play greeting: "${greeting}"`);
+        await playTextToPatient(callConnection, greeting, true);
+        console.log(`✅ Greeting playback initiated successfully`);
+        
+    } catch (error) {
+        console.error('❌ Error in startGreeting:', error.message);
+        console.error('📊 Error stack:', error.stack);
+        
+        const callState = callStates.get(callConnectionId);
+        if (callState) {
+            callState.events.greetingPlayed = false; // Reset on error
+            console.log('🔄 Reset greetingPlayed flag due to error');
+        }
     }
 }
 
@@ -469,6 +852,45 @@ async function handleRecognizeCompleted(event) {
     }
 }
 
+// Generate fallback response when PatientBot is unavailable
+async function generateFallbackResponse(userText, callState) {
+    try {
+        const lowerText = userText.toLowerCase();
+        
+        // Basic response patterns
+        if (lowerText.includes('pain') || lowerText.includes('hurt')) {
+            return "I understand you're experiencing pain. Can you tell me more about where it hurts and how severe it is on a scale of 1 to 10?";
+        }
+        
+        if (lowerText.includes('medication') || lowerText.includes('medicine') || lowerText.includes('pill')) {
+            return "Let's talk about your medications. Are you taking them as prescribed? Have you missed any doses recently?";
+        }
+        
+        if (lowerText.includes('appointment') || lowerText.includes('schedule') || lowerText.includes('doctor')) {
+            return "Would you like to schedule an appointment? I can help you find available times with your healthcare provider.";
+        }
+        
+        if (lowerText.includes('yes') || lowerText.includes('ok') || lowerText.includes('sure')) {
+            return "Great! Can you tell me how you've been feeling lately? Any concerns about your health or medications?";
+        }
+        
+        if (lowerText.includes('no') || lowerText.includes('not')) {
+            return "I understand. Is there anything else I can help you with today regarding your healthcare?";
+        }
+        
+        if (lowerText.includes('help') || lowerText.includes('question')) {
+            return "I'm here to help with your healthcare questions. You can ask me about medications, symptoms, or scheduling appointments.";
+        }
+        
+        // Generic fallback
+        return "Thank you for sharing that with me. Can you tell me more about how you've been feeling lately, or if you have any questions about your medications?";
+        
+    } catch (error) {
+        console.error('❌ Error in generateFallbackResponse:', error.message);
+        return "I'm here to help with your healthcare. How can I assist you today?";
+    }
+}
+
 async function handleRecognizeFailed(event) {
     const { callConnectionId, result } = event;
     console.error(`❌ Speech recognition failed for call ${callConnectionId}:`, result?.reason);
@@ -513,13 +935,18 @@ async function playTextToPatient(callConnection, text, listenAfterPlaying = fals
     try {
         console.log(`🔊 Playing to patient: "${text}"`);
         
-        // Try multiple approaches for Speech Services integration
+        // Remove SSML tags for ACS compatibility and extract plain text
+        const plainText = text.replace(/<[^>]*>/g, '').trim();
+        console.log(`🔊 Simplified text: "${plainText}"`);
+        
+        // Ensure we have valid text
+        if (!plainText) {
+            console.error('❌ No text to play after SSML cleanup');
+            return;
+        }
+        
+        // Primary method: Use plain text with full voice configuration
         try {
-            // Remove SSML tags for ACS compatibility and extract plain text
-            const plainText = text.replace(/<[^>]*>/g, '').trim();
-            console.log(`🔊 Simplified text: "${plainText}"`);
-            
-            // Method 1: Use plain text with voice configuration
             await callConnection.getCallMedia().playToAll([{
                 kind: 'textSource',
                 text: plainText,
@@ -528,59 +955,124 @@ async function playTextToPatient(callConnection, text, listenAfterPlaying = fals
             }]);
             console.log('✅ Speech playback initiated successfully');
         } catch (speechError) {
-            console.error('❌ Speech Services error:', speechError.message);
+            console.error('❌ Primary speech method failed:', speechError.message);
             
-            // Method 2: Try with even simpler text
+            // Method 2: Try with basic voice configuration
             try {
                 await callConnection.getCallMedia().playToAll([{
                     kind: 'textSource',
-                    text: 'Hello, this is your healthcare assistant calling. Can you hear me?',
-                    voiceName: 'en-US-JennyNeural',
+                    text: plainText,
                     sourceLocale: 'en-US'
                 }]);
-                console.log('✅ Fallback speech with simple text initiated');
+                console.log('✅ Fallback speech with basic config initiated');
             } catch (fallbackError) {
                 console.error('❌ Fallback speech also failed:', fallbackError.message);
                 
-                // Method 3: Try with minimal configuration
-                await callConnection.getCallMedia().playToAll([{
-                    kind: 'textSource',
-                    text: 'Hello'
-                }]);
-                console.log('⚠️ Using minimal text as last resort');
-            }
-        }
-        
-        if (listenAfterPlaying) {
-            // Start listening for the user's response with optimized settings
-            const callState = callStates.get(callConnection.callConnectionId);
-            const patientPhoneNumber = callState?.patient?.phoneNumber;
-            
-            if (patientPhoneNumber) {
+                // Method 3: Try with minimal configuration as last resort
                 try {
-                    await callConnection.getCallMedia().startRecognizing({
-                        targetParticipant: {
-                            kind: 'phoneNumber',
-                            phoneNumber: patientPhoneNumber
-                        },
-                        recognizeOptions: {
-                            interruptPrompt: true,
-                            initialSilenceTimeoutInSeconds: 5,
-                            maxTonesToCollect: 0, // We want speech, not DTMF
-                            speechLanguage: 'en-IN', // Indian English for better recognition
-                            speechModelEndpointId: process.env.CUSTOM_SPEECH_ENDPOINT_ID // Optional custom speech model
-                        }
-                    });
-                    console.log('✅ Speech recognition started');
-                } catch (recognizeError) {
-                    console.error('❌ Speech recognition setup failed:', recognizeError.message);
-                    // Continue without speech recognition
+                    await callConnection.getCallMedia().playToAll([{
+                        kind: 'textSource',
+                        text: 'Hello, this is your healthcare assistant calling. Please hold while I connect.'
+                    }]);
+                    console.log('⚠️ Using minimal fallback message');
+                } catch (minimalError) {
+                    console.error('❌ All speech methods failed:', minimalError.message);
+                    throw new Error('All speech playback methods failed');
                 }
             }
         }
+        
+        // Set up speech recognition after a successful playback
+        if (listenAfterPlaying) {
+            // Wait a moment before starting speech recognition to avoid conflicts
+            setTimeout(async () => {
+                await startSpeechRecognition(callConnection);
+            }, 1000); // 1 second delay
+        }
+        
     } catch (error) {
         console.error('❌ Error in playTextToPatient:', error.message);
         throw error;
+    }
+}
+
+async function startSpeechRecognition(callConnection) {
+    try {
+        const callConnectionId = callConnection.callConnectionId;
+        const callState = callStates.get(callConnectionId);
+        
+        if (!callState || !callState.patient) {
+            console.error('❌ No call state or patient data for speech recognition');
+            return;
+        }
+        
+        const patientPhoneNumber = callState.patient.phoneNumber;
+        
+        if (!patientPhoneNumber) {
+            console.error('❌ No patient phone number for speech recognition');
+            return;
+        }
+        
+        console.log(`🎤 Starting speech recognition for ${patientPhoneNumber}`);
+        
+        // Ensure we have the call media interface
+        const callMedia = callConnection.getCallMedia();
+        if (!callMedia) {
+            console.error('❌ No call media interface available for speech recognition');
+            return;
+        }
+        
+        const recognizeOptions = {
+            targetParticipant: {
+                kind: 'phoneNumber',
+                phoneNumber: patientPhoneNumber
+            },
+            recognizeOptions: {
+                interruptPrompt: true,
+                initialSilenceTimeoutInSeconds: 8,
+                speechLanguage: 'en-IN', // Indian English for better recognition
+            }
+        };
+        
+        // Add custom speech endpoint if available
+        if (process.env.CUSTOM_SPEECH_ENDPOINT_ID) {
+            recognizeOptions.recognizeOptions.speechModelEndpointId = process.env.CUSTOM_SPEECH_ENDPOINT_ID;
+        }
+        
+        try {
+            await callMedia.startRecognizing(recognizeOptions);
+            console.log('✅ Speech recognition started successfully');
+        } catch (recognizeError) {
+            console.log('⚠️ Primary speech recognition failed, trying fallback method');
+            
+            // Fallback: Try with minimal options
+            try {
+                const fallbackOptions = {
+                    targetParticipant: {
+                        kind: 'phoneNumber',
+                        phoneNumber: patientPhoneNumber
+                    },
+                    recognizeOptions: {
+                        speechLanguage: 'en-US'
+                    }
+                };
+                
+                await callMedia.startRecognizing(fallbackOptions);
+                console.log('✅ Fallback speech recognition started successfully');
+            } catch (fallbackError) {
+                console.log('⚠️ Speech recognition not available - continuing without it');
+                throw fallbackError; // Re-throw to trigger the outer catch
+            }
+        }
+        console.log('✅ Speech recognition started successfully');
+        
+    } catch (recognizeError) {
+        console.error('❌ Speech recognition setup failed:', recognizeError.message);
+        console.error('📊 Error details:', recognizeError.stack || 'No stack trace available');
+        
+        // Don't throw error here - continue without speech recognition
+        // The conversation can still proceed with follow-up prompts
+        console.log('⚠️ Continuing without speech recognition');
     }
 }
 
